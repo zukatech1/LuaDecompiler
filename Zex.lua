@@ -17329,7 +17329,7 @@ local function main()
 
 	local PP_INDENT = "    "  -- 4 spaces per level
 	
-	local function prettyPrint(text)
+	local function _ppImpl(text)
 		local result = {}
 		local depth  = 0
 	
@@ -17346,54 +17346,10 @@ local function main()
 		end
 
 		ZukDecompile = Decompile
+		prettyPrint  = _ppImpl
 		getgenv()._ZUK_DECOMPILE    = Decompile
-		getgenv()._ZUK_PRETTYPRINT  = prettyPrint
+		getgenv()._ZUK_PRETTYPRINT  = _ppImpl
 	end
-	end
-	-- ── prettyPrint: adds indentation to disasm output ─────────────────────
-	local function prettyPrint(text)
-		local result = {}
-		local depth  = 0
-		local DEDENT_BEFORE      = { ["end"]=true, ["until"]=true }
-		local INDENT_AFTER       = { ["then"]=true, ["do"]=true, ["repeat"]=true }
-		local DEDENT_THEN_INDENT = { ["else"]=true, ["elseif"]=true }
-		local function stripStrings(s)
-			s = s:gsub('"%[^"\\%]*"', '""')
-			s = s:gsub("'[^'\\]*'", "''")
-			s = s:gsub("%%-%-.*$", "")
-			return s
-		end
-		local function firstWord(s)
-			return (stripStrings(s):match("^%s*([%a_][%w_]*)")) or ""
-		end
-		local function containsOpener(s)
-			local clean = stripStrings(s)
-			for w in clean:gmatch("[%a_][%w_]*") do
-				if INDENT_AFTER[w] then return true end
-				if w == "function" then return true end
-			end
-			return false
-		end
-		for line in (text .. "\n"):gmatch("[^\n]*\n") do
-			local bare = line:gsub("\n$", "")
-			if bare == "" then result[#result+1] = "\n"; continue end
-			local expr = bare:match("^%[%d+%]%s*:?%d*:?%s*%u[%u_]*%s+(.*)") or bare
-			local kw = firstWord(expr)
-			if DEDENT_THEN_INDENT[kw] then
-				depth = math.max(0, depth-1)
-				result[#result+1] = string.rep("    ", depth)..bare.."\n"
-				depth += 1
-			elseif DEDENT_BEFORE[kw] then
-				depth = math.max(0, depth-1)
-				result[#result+1] = string.rep("    ", depth)..bare.."\n"
-			else
-				result[#result+1] = string.rep("    ", depth)..bare.."\n"
-				if containsOpener(expr) then depth += 1 end
-			end
-		end
-		return table.concat(result)
-	end
-
 	-- ─────────────────────────────────────────────────────────────────
 
 	local ScriptViewer = {}
