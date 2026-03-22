@@ -15970,7 +15970,7 @@ end
 
 local function main()
 
-	-- ── zukv2 decompiler core (updated) ──────────────────────────────
+	-- ── zukv2 decompiler core ──────────────────────────────────────────
 	local ZukDecompile
 	local prettyPrint
 	do
@@ -17327,7 +17327,7 @@ local function main()
 		return table.concat(lines,"\n")
 	end
 
-	local PP_INDENT = "    "  -- 4 spaces per level
+	local "    " = "    "  -- 4 spaces per level
 	
 	local function _ppImpl(text)
 		local result = {}
@@ -17344,6 +17344,48 @@ local function main()
 			s = s:gsub("%-%-.*$", "")  -- strip trailing comment
 			return s
 		end
+	
+		local function firstWord(s)
+			return (stripStrings(s):match("^%s*([%a_][%w_]*)")) or ""
+		end
+	
+		local function containsOpener(s)
+			local clean = stripStrings(s)
+			for w in clean:gmatch("[%a_][%w_]*") do
+				if INDENT_AFTER[w] then return true end
+				if w == "function" then return true end
+			end
+			return false
+		end
+	
+		for line in (text .. "\n"):gmatch("[^\n]*\n") do
+			local bare = line:gsub("\n$", "")
+			if bare == "" then
+				result[#result + 1] = "\n"; continue
+			end
+	
+			-- strip disasm prefix: [NNN] :NNN: OPNAME<spaces>
+			local expr = bare:match("^%[%d+%]%s*:?%d*:?%s*%u[%u_]*%s+(.*)") or bare
+	
+			local kw = firstWord(expr)
+	
+			if DEDENT_THEN_INDENT[kw] then
+				depth = math.max(0, depth - 1)
+				result[#result + 1] = string.rep("    ", depth) .. bare .. "\n"
+				depth += 1
+	
+			elseif DEDENT_BEFORE[kw] then
+				depth = math.max(0, depth - 1)
+				result[#result + 1] = string.rep("    ", depth) .. bare .. "\n"
+	
+			else
+				result[#result + 1] = string.rep("    ", depth) .. bare .. "\n"
+				if containsOpener(expr) then depth += 1 end
+			end
+		end
+	
+		return table.concat(result)
+	end
 
 		ZukDecompile = Decompile
 		prettyPrint  = _ppImpl
