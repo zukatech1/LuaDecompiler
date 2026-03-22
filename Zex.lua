@@ -2441,7 +2441,7 @@ end
 					local okBC, bytecode = pcall(env.getscriptbytecode, v.Obj)
 					if okBC and bytecode and bytecode ~= "" then
 						local opts = {
-							DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+							DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true, CleanMode=true,
 							ReaderFloatPrecision=7, ShowDebugInformation=false,
 							ShowTrivialOperations=false, ShowInstructionLines=true,
 							ShowOperationIndex=true, ShowOperationNames=true,
@@ -4124,7 +4124,7 @@ end
 				local okBC, bytecode = pcall(env.getscriptbytecode, scriptObj)
 				if zuk and okBC and bytecode and bytecode ~= "" then
 					local opts = {
-						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true, CleanMode=true,
 						ReaderFloatPrecision=7, ShowDebugInformation=false,
 						ShowTrivialOperations=false, ShowInstructionLines=true,
 						ShowOperationIndex=true, ShowOperationNames=true,
@@ -4691,7 +4691,7 @@ end
 				local okBC, bytecode = pcall(env.getscriptbytecode, target)
 				if not (okBC and bytecode and bytecode ~= "") then return nil end
 				local opts = {
-					DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+					DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true, CleanMode=true,
 					ReaderFloatPrecision=7, ShowDebugInformation=false,
 					ShowTrivialOperations=false, ShowInstructionLines=true,
 					ShowOperationIndex=true, ShowOperationNames=true,
@@ -15973,7 +15973,7 @@ local function main()
 	-- ── zukv2 decompiler core ──────────────────────────────────────────
 	local ZukDecompile
 	local prettyPrint
-	do
+	task.defer(function()
 	local FLOAT_PRECISION = 7
 	local Reader = {}
 	function Reader.new(bytecode)
@@ -16495,12 +16495,15 @@ local function main()
 					end
 				end
 				local function writeFlags()
+					-- guard: flags may already be a table if proto visited twice (DUPCLOSURE)
+					if type(flags) == "table" then return end
+					local rawFlags = type(flags) == "number" and flags or 0
 					local df = {}
 					if proto.main then
-						df.native = toBoolean(bit32.band(flags or 0, LuauProtoFlag.LPF_NATIVE_MODULE))
+						df.native = toBoolean(bit32.band(rawFlags, LuauProtoFlag.LPF_NATIVE_MODULE))
 					else
-						df.native = toBoolean(bit32.band(flags or 0, LuauProtoFlag.LPF_NATIVE_FUNCTION))
-						df.cold   = toBoolean(bit32.band(flags or 0, LuauProtoFlag.LPF_NATIVE_COLD))
+						df.native = toBoolean(bit32.band(rawFlags, LuauProtoFlag.LPF_NATIVE_FUNCTION))
+						df.cold   = toBoolean(bit32.band(rawFlags, LuauProtoFlag.LPF_NATIVE_COLD))
 					end
 					flags = df; proto.flags = df
 				end
@@ -17327,7 +17330,6 @@ local function main()
 		return table.concat(lines,"\n")
 	end
 
-	
 	local function _ppImpl(text)
 		local result = {}
 		local depth  = 0
@@ -17390,7 +17392,7 @@ local function main()
 		prettyPrint  = _ppImpl
 		getgenv()._ZUK_DECOMPILE    = Decompile
 		getgenv()._ZUK_PRETTYPRINT  = _ppImpl
-	end
+	end)
 	-- ─────────────────────────────────────────────────────────────────
 
 	local ScriptViewer = {}
@@ -17608,17 +17610,23 @@ local function main()
 
 		-- ── zukv2 path: getscriptbytecode → our disassembler ────────────────
 		local source = nil
+		-- if ZukDecompile hasn't initialised yet (task.defer still pending), wait one frame
+		if not ZukDecompile then
+			local deadline = tick() + 5
+			repeat task.wait() until ZukDecompile or tick() > deadline
+		end
 		local okBC, bytecode = pcall(getscriptbytecode, scr)
-		if okBC and bytecode and bytecode ~= "" then
+		if ZukDecompile and okBC and bytecode and bytecode ~= "" then
 			local opts = {
 				DecompilerMode        = "disasm",
 				DecompilerTimeout     = 15,
 				ReaderFloatPrecision  = 7,
+				CleanMode             = true,
 				ShowDebugInformation  = false,
 				ShowTrivialOperations = false,
-				ShowInstructionLines  = true,
-				ShowOperationIndex    = true,
-				ShowOperationNames    = true,
+				ShowInstructionLines  = false,
+				ShowOperationIndex    = false,
+				ShowOperationNames    = false,
 				ListUsedGlobals       = true,
 				UseTypeInfo           = true,
 				EnabledRemarks        = {ColdRemark=false, InlineRemark=true},
@@ -17635,66 +17643,16 @@ local function main()
 			end
 		end
 
-		-- ── fallback: executor env.decompile ────────────────────────────────
 		if not source then
-			local s, res = pcall(env.decompile or function() end, scr)
-			if s and res then
-				source = "-- Script Path: "..getPath(scr).."\n"
-				source = source.."-- Took "..tostring(math.floor((tick()-oldtick)*100)/100).."s\n"
-				source = source.."-- Executor: "..executorName.." ("..executorVersion..")\n\n"
-				source = source..res
-				PreviousScr = scr
-				dumpbtn.TextColor3 = Color3.new(1,1,1)
-			else
-				-- konstant reconstruction fallback
-				local konstSource = nil
-				local getgcf = env.getgc or getgc or get_gc_objects
-				local getconstants = (debug and debug.getconstants) or getconstants or getconsts
-				local getfenv_ = getfenv
-				if getgcf and getconstants and getfenv_ then
-					local ok, gc = pcall(getgcf)
-					if ok and gc then
-						local chunks = {}
-						for _, fn in pairs(gc) do
-							if type(fn) == "function" then
-								local ok2, fenv = pcall(getfenv_, fn)
-								if ok2 and fenv and rawget(fenv,"script") == scr then
-									local ok3, consts = pcall(getconstants, fn)
-									if ok3 and consts then
-										for _, c in pairs(consts) do
-											if type(c) == "string" and #c > 10 then
-												table.insert(chunks, c)
-											end
-										end
-									end
-								end
-							end
-						end
-						if #chunks > 0 then
-							local seen, unique = {}, {}
-							for _, c in ipairs(chunks) do
-								if not seen[c] then seen[c]=true; table.insert(unique, c) end
-							end
-							konstSource = "-- [Konstant Reconstruction]\n-- Script Path: "..getPath(scr).."\n\n"
-							konstSource = konstSource..table.concat(unique, "\n\n")
-						end
-					end
-				end
-				if konstSource then
-					source = konstSource
-					PreviousScr = scr
-					dumpbtn.TextColor3 = Color3.new(1,1,1)
-				else
-					PreviousScr = nil
-					dumpbtn.TextColor3 = Color3.new(0.5,0.5,0.5)
-					source = "-- Unable to view source.\n"
-					source = source.."-- Script Path: "..getPath(scr).."\n"
-					source = source.."-- Executor: "..executorName.." ("..executorVersion..")"
-				end
-			end
+			source = "-- Unable to view source.\n"
+			source = source.."-- Script Path: "..getPath(scr).."\n"
+			source = source.."-- Reason: getscriptbytecode() returned nothing or decompiler failed.\n"
+			source = source.."-- Executor: "..executorName.." ("..executorVersion..")"
+			PreviousScr = nil
+			dumpbtn.TextColor3 = Color3.new(0.5,0.5,0.5)
 		end
 
-		codeFrame:SetText(source or "")
+		codeFrame:SetText(source)
 		window:Show()
 	end
 
@@ -18132,55 +18090,8 @@ Main = (function()
 		end
 		env.request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
 		
-		env.decompile = decompile or (function()
-
-			if not env.getscriptbytecode then  return end
-
-			local API = "http://api.plusgiant5.com"
-
-			local last_call = 0
-
-			local request = env.request
-
-			local function call(konstantType, scriptPath)
-				local success, bytecode = pcall(env.getscriptbytecode, scriptPath)
-
-				if (not success) then
-					return
-				end
-
-				local time_elapsed = os.clock() - last_call
-				if time_elapsed <= .5 then
-					task.wait(.5 - time_elapsed)
-				end
-
-				local httpResult = request({
-					Url = API .. konstantType,
-					Body = bytecode,
-					Method = "POST",
-					Headers = {
-						["Content-Type"] = "text/plain"
-					}
-				})
-
-				last_call = os.clock()
-
-				if (httpResult.StatusCode ~= 200) then
-					return
-				else
-					return httpResult.Body
-				end
-			end
-
-			local function decompile(scriptPath)
-				return call("/konstant/decompile", scriptPath)
-			end
-
-			getgenv().decompile = decompile
-			
-			env.decompile = decompile
-			return decompile
-		end)()
+		-- Konstant removed: zukv2 handles all decompilation via env.decompile override below
+		env.decompile = function() return nil end
 
 		-- ── Expose ZukDecompile on env and override env.decompile ───────────
 		-- ScriptViewer stores ZukDecompile in _G._ZUK_DECOMPILE (set in main()).
@@ -18195,7 +18106,7 @@ Main = (function()
 				local okBC, bytecode = pcall(env.getscriptbytecode, scriptObj)
 				if okBC and bytecode and bytecode ~= "" then
 					local opts = {
-						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true, CleanMode=true,
 						ReaderFloatPrecision=7, ShowDebugInformation=false,
 						ShowTrivialOperations=false, ShowInstructionLines=true,
 						ShowOperationIndex=true, ShowOperationNames=true,
