@@ -2441,7 +2441,7 @@ end
 					local okBC, bytecode = pcall(env.getscriptbytecode, v.Obj)
 					if okBC and bytecode and bytecode ~= "" then
 						local opts = {
-							DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+							DecompilerMode="disasm", DecompilerTimeout=15,
 							ReaderFloatPrecision=7, ShowDebugInformation=false,
 							ShowTrivialOperations=false, ShowInstructionLines=true,
 							ShowOperationIndex=true, ShowOperationNames=true,
@@ -3956,412 +3956,295 @@ end
 		end})
 
 		context:Register("SCREENGUI_TO_SCRIPT",{
-		Name = "Convert to Script (Deep)",
-		IconMap = Explorer.MiscIcons,
-		Icon = "Save",
+		Name = "Convert to Script (Deep)", 
+		IconMap = Explorer.MiscIcons, 
+		Icon = "Save", 
 		OnClick = function()
-			local node = selection.List[1]
-			if not node or not node.Obj:IsA("ScreenGui") then return end
-			local gui = node.Obj
+		local node = selection.List[1]
+		if not node or not node.Obj:IsA("ScreenGui") then return end
+		local gui = node.Obj
 
-			-- ── Serializer ───────────────────────────────────────────────────
-			local function serialize(v)
-				local t = typeof(v)
-				if t == "string" then
-					return string.format("%q", v)
-				elseif t == "number" then
-					-- avoid scientific notation for small/large numbers
-					if v == math.floor(v) then return tostring(math.floor(v)) end
-					return tostring(v)
-				elseif t == "boolean" then
-					return tostring(v)
-				elseif t == "nil" then
-					return "nil"
-				elseif t == "Vector3" then
-					return ("Vector3.new(%s, %s, %s)"):format(v.X, v.Y, v.Z)
-				elseif t == "Vector2" then
-					return ("Vector2.new(%s, %s)"):format(v.X, v.Y)
-				elseif t == "UDim2" then
-					return ("UDim2.new(%s, %s, %s, %s)"):format(
-						v.X.Scale, v.X.Offset, v.Y.Scale, v.Y.Offset)
-				elseif t == "UDim" then
-					return ("UDim.new(%s, %s)"):format(v.Scale, v.Offset)
-				elseif t == "CFrame" then
-					local c = {v:GetComponents()}
-					return "CFrame.new(" .. table.concat(c, ", ") .. ")"
-				elseif t == "Color3" then
-					return ("Color3.fromRGB(%d, %d, %d)"):format(
-						math.floor(v.R*255), math.floor(v.G*255), math.floor(v.B*255))
-				elseif t == "BrickColor" then
-					return ("BrickColor.new(%q)"):format(v.Name)
-				elseif t == "EnumItem" then
-					return tostring(v)
-				elseif t == "Rect" then
-					return ("Rect.new(%s, %s, %s, %s)"):format(
-						v.Min.X, v.Min.Y, v.Max.X, v.Max.Y)
-				elseif t == "FontFace" then
-					return ("Font.new(%q, Enum.FontWeight.%s, Enum.FontStyle.%s)"):format(
-						v.Family, v.Weight.Name, v.Style.Name)
-				elseif t == "NumberRange" then
-					return ("NumberRange.new(%s, %s)"):format(v.Min, v.Max)
-				elseif t == "NumberSequence" then
-					local kps = {}
-					for _, kp in ipairs(v.Keypoints) do
-						table.insert(kps, ("NumberSequenceKeypoint.new(%s, %s, %s)"):format(
-							kp.Time, kp.Value, kp.Envelope))
-					end
-					return "NumberSequence.new({" .. table.concat(kps, ", ") .. "})"
-				elseif t == "ColorSequence" then
-					local kps = {}
-					for _, kp in ipairs(v.Keypoints) do
-						table.insert(kps, ("ColorSequenceKeypoint.new(%s, Color3.fromRGB(%d,%d,%d))"):format(
-							kp.Time,
-							math.floor(kp.Value.R*255),
-							math.floor(kp.Value.G*255),
-							math.floor(kp.Value.B*255)))
-					end
-					return "ColorSequence.new({" .. table.concat(kps, ", ") .. "})"
-				end
-				return "nil"
-			end
+		-- ============================================================================
+		-- SERIALIZATION
+		-- ============================================================================
+		local function serialize(v)
+		local t = typeof(v)
+		if t == "string" then
+		return '"' .. v:gsub('"', '\\"'):gsub("\n", "\\n") .. '"'
+		elseif t == "number" or t == "boolean" then
+		return tostring(v)
+		elseif t == "Vector3" then
+		return "Vector3.new(" .. v.X .. ", " .. v.Y .. ", " .. v.Z .. ")"
+		elseif t == "Vector2" then
+		return "Vector2.new(" .. v.X .. ", " .. v.Y .. ")"
+		elseif t == "UDim2" then
+		return "UDim2.new(" .. v.X.Scale .. ", " .. v.X.Offset .. ", " .. v.Y.Scale .. ", " .. v.Y.Offset .. ")"
+		elseif t == "UDim" then
+		return "UDim.new(" .. v.Scale .. ", " .. v.Offset .. ")"
+		elseif t == "CFrame" then
+		return "CFrame.new(" .. tostring(v) .. ")"
+		elseif t == "Color3" then
+		return "Color3.fromRGB(" .. math.floor(v.R*255) .. ", " .. math.floor(v.G*255) .. ", " .. math.floor(v.B*255) .. ")"
+		elseif t == "BrickColor" then
+		return "BrickColor.new(" .. serialize(v.Name) .. ")"
+		elseif t == "EnumItem" then
+		return tostring(v)
+		elseif t == "Rect" then
+		return "Rect.new(" .. v.Min.X .. ", " .. v.Min.Y .. ", " .. v.Max.X .. ", " .. v.Max.Y .. ")"
+		elseif t == "FontFace" then
+		return "Font.new(" .. serialize(v.Family) .. ", Enum.FontWeight." .. tostring(v.Weight):match("FontWeight%.(.+)") .. ", Enum.FontStyle." .. tostring(v.Style):match("FontStyle%.(.+)") .. ")"
+		end
+		return "nil"
+		end
 
-			-- ── Property map ─────────────────────────────────────────────────
-			-- Common props shared by most visible objects
-			local COMMON = {
-				"Name","Size","Position","AnchorPoint","Visible","ZIndex","LayoutOrder",
-				"BackgroundColor3","BackgroundTransparency","BorderColor3","BorderSizePixel",
-				"ClipsDescendants","Active","Selectable","Rotation","AutomaticSize",
-			}
-			local function merge(t, extra)
-				local r = {}
-				for _,v in ipairs(t) do r[#r+1]=v end
-				for _,v in ipairs(extra or {}) do r[#r+1]=v end
-				return r
-			end
-			local propertyMap = {
-				ScreenGui = {
-					"Name","Enabled","ResetOnSpawn","DisplayOrder","IgnoreGuiInset",
-					"ZIndexBehavior","ScreenInsets",
-				},
-				TextLabel = merge(COMMON, {
-					"Text","RichText","TextSize","Font","FontFace",
-					"TextColor3","TextTransparency","TextWrapped","TextScaled",
-					"TextXAlignment","TextYAlignment","TextTruncate",
-					"TextStrokeColor3","TextStrokeTransparency","LineHeight",
-					"MaxVisibleGraphemes","AutoLocalize",
-				}),
-				TextButton = merge(COMMON, {
-					"Text","RichText","TextSize","Font","FontFace",
-					"TextColor3","TextTransparency","TextWrapped","TextScaled",
-					"TextXAlignment","TextYAlignment","TextTruncate",
-					"TextStrokeColor3","TextStrokeTransparency","LineHeight",
-					"AutoButtonColor","Modal","Style",
-				}),
-				TextBox = merge(COMMON, {
-					"Text","RichText","TextSize","Font","FontFace",
-					"TextColor3","TextTransparency","TextWrapped","TextScaled",
-					"TextXAlignment","TextYAlignment","PlaceholderText","PlaceholderColor3",
-					"ClearTextOnFocus","MultiLine","TextEditable",
-				}),
-				Frame = merge(COMMON, {"Style"}),
-				ScrollingFrame = merge(COMMON, {
-					"CanvasSize","CanvasPosition","ScrollBarThickness",
-					"ScrollBarImageColor3","ScrollBarImageTransparency",
-					"ScrollingDirection","ScrollingEnabled",
-					"VerticalScrollBarInset","HorizontalScrollBarInset",
-					"BottomImage","MidImage","TopImage",
-				}),
-				ImageLabel = merge(COMMON, {
-					"Image","ImageColor3","ImageTransparency","ImageRectOffset",
-					"ImageRectSize","ResampleMode","ScaleType","SliceCenter","SliceScale",
-					"TileSize",
-				}),
-				ImageButton = merge(COMMON, {
-					"Image","ImageColor3","ImageTransparency","ImageRectOffset",
-					"ImageRectSize","ResampleMode","ScaleType","SliceCenter","SliceScale",
-					"TileSize","HoverImage","PressedImage","Style","AutoButtonColor","Modal",
-				}),
-				VideoFrame = merge(COMMON, {"Video","Looped","Playing","TimePosition","Volume"}),
-				ViewportFrame = merge(COMMON, {"Ambient","LightColor","LightDirection"}),
-				BillboardGui = {
-					"Name","Active","AlwaysOnTop","Brightness","ClipsDescendants",
-					"Enabled","LightInfluence","MaxDistance","Size","SizeOffset",
-					"StudsOffset","StudsOffsetWorldSpace","ZIndexBehavior",
-				},
-				SurfaceGui = {
-					"Name","Active","AlwaysOnTop","Brightness","ClipsDescendants",
-					"Enabled","LightInfluence","PixelsPerStud","SizingMode","ZIndexBehavior",
-				},
-				-- Layout / constraint objects
-				UICorner              = {"CornerRadius"},
-				UIStroke              = {"Color","Thickness","Transparency","LineJoinMode","ApplyStrokeMode","Enabled"},
-				UIGradient            = {"Color","Offset","Rotation","Transparency","Enabled"},
-				UIPadding             = {"PaddingLeft","PaddingRight","PaddingTop","PaddingBottom"},
-				UIListLayout          = {"Padding","FillDirection","HorizontalAlignment","VerticalAlignment","SortOrder","HorizontalFlex","VerticalFlex","ItemLineAlignment","Wraps"},
-				UIGridLayout          = {"CellPadding","CellSize","FillDirectionMaxCells","FillDirection","HorizontalAlignment","VerticalAlignment","SortOrder","StartCorner"},
-				UITableLayout         = {"FillEmptySpaceColumns","FillEmptySpaceRows","FillDirection","HorizontalAlignment","VerticalAlignment","MajorAxis","Padding","SortOrder"},
-				UIAspectRatioConstraint = {"AspectRatio","AspectType","DominantAxis"},
-				UISizeConstraint      = {"MinSize","MaxSize"},
-				UITextSizeConstraint  = {"MinTextSize","MaxTextSize"},
-				UIScale               = {"Scale"},
-				UIFlexItem            = {"FlexMode","GrowRatio","ShrinkRatio"},
-				UIPageLayout          = {"Animated","CircularEnabled","EasingDirection","EasingStyle","GamepadInputEnabled","Padding","ScrollWheelInputEnabled","SortOrder","TouchInputEnabled","TweenTime","FillDirection","HorizontalAlignment","VerticalAlignment"},
-			}
-			local function getProps(obj)
-				return propertyMap[obj.ClassName]
-					or merge(COMMON, {})
-			end
+		-- ============================================================================
+		-- PROPERTY MAPS
+		-- ============================================================================
+		local propertyMap = {
+		ScreenGui = {
+		"Name", "Enabled", "ResetOnSpawn", "DisplayOrder", "IgnoreGuiInset", "ZIndexBehavior",
+		"BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", "Transparency"
+		},
+		TextLabel = {
+		"Name", "Text", "TextSize", "Font", "TextColor3", "TextWrapped", "TextScaled", "TextXAlignment", "TextYAlignment",
+		"Size", "Position", "Visible", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel"
+		},
+		TextButton = {
+		"Name", "Text", "TextSize", "Font", "TextColor3", "TextWrapped", "TextScaled", "TextXAlignment", "TextYAlignment",
+		"Size", "Position", "Visible", "Active", "Selectable", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel"
+		},
+		Frame = {
+		"Name", "Size", "Position", "Visible", "Active", "Selectable", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel", "ClipsDescendants"
+		},
+		ScrollingFrame = {
+		"Name", "Size", "Position", "Visible", "Active", "Selectable", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel",
+		"CanvasSize", "ScrollBarThickness", "ClipsDescendants"
+		},
+		ImageLabel = {
+		"Name", "Image", "ImageColor3", "ImageScaled", "ImageSize", "Size", "Position", "Visible", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel"
+		},
+		ImageButton = {
+		"Name", "Image", "ImageColor3", "ImageScaled", "ImageSize", "Size", "Position", "Visible", "Active", "Selectable", "BackgroundColor3", "BackgroundTransparency", "BorderColor3", "BorderSizePixel"
+		},
+		UICorner = {"CornerRadius"},
+		UIStroke = {"Color", "Thickness", "Transparency", "LineJoinMode"},
+		UIGradient = {"Color", "Rotation", "Transparency"},
+		UIPadding = {"PaddingLeft", "PaddingRight", "PaddingTop", "PaddingBottom"},
+		UIListLayout = {"Padding", "FillDirection", "HorizontalAlignment", "VerticalAlignment", "SortOrder"},
+		UIGridLayout = {"CellPadding", "CellSize", "FillDirectionMaxCells", "FillDirection", "HorizontalAlignment", "VerticalAlignment", "SortOrder"},
+		UIAspectRatioConstraint = {"AspectRatio", "AspectType", "DominantAxis"},
+		UISizeConstraint = {"MinSize", "MaxSize"},
+		UITextSizeConstraint = {"MinTextSize", "MaxTextSize"},
+		}
 
-			-- ── Script extraction (uses zukv2 bytecode path) ──────────────
-			local extractedScripts = {}
-			-- maps instance → variable name so parent refs are correct
-			local instanceToVar = {}
+		local function getPropertiesForObject(obj)
+		local className = obj.ClassName
+		return propertyMap[className] or {"Name", "Size", "Position", "Visible", "BackgroundColor3", "BackgroundTransparency"}
+		end
 
-			local function extractScript(scriptObj, parentVar)
-				local source = ""
-				-- Try zukv2 first
-				local zuk = env.ZukDecompile or getgenv()._ZUK_DECOMPILE
-				local okBC, bytecode = pcall(env.getscriptbytecode, scriptObj)
-				if zuk and okBC and bytecode and bytecode ~= "" then
-					local opts = {
-						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
-						ReaderFloatPrecision=7, ShowDebugInformation=false,
-						ShowTrivialOperations=false, ShowInstructionLines=true,
-						ShowOperationIndex=true, ShowOperationNames=true,
-						ListUsedGlobals=true, UseTypeInfo=true,
-						EnabledRemarks={ColdRemark=false,InlineRemark=true},
-						ReturnElapsedTime=false,
-					}
-					local okD, result = pcall(zuk, bytecode, opts)
-					if okD and result then
-						local pp = getgenv()._ZUK_PRETTYPRINT
-						source = pp and pp(result) or result
-					end
-				end
-				-- fallback: Source property
-				if source == "" then
-					local ok2, src = pcall(function() return scriptObj.Source end)
-					if ok2 and src and src ~= "" then source = src end
-				end
-				-- fallback: env.decompile (Konstant)
-				if source == "" and env.decompile then
-					local ok3, res = pcall(env.decompile, scriptObj)
-					if ok3 and res then source = res end
-				end
-				if source == "" then
-					source = "-- [PROTECTED/EMPTY SCRIPT] Could not extract source\n"
-				end
-				local enabled = true
-				pcall(function() enabled = not scriptObj.Disabled end)
-				table.insert(extractedScripts, {
-					parent    = parentVar,
-					parentObj = instanceToVar,   -- unused, kept for debug
-					className = scriptObj.ClassName,
-					name      = scriptObj.Name,
-					source    = source,
-					enabled   = enabled,
-				})
-			end
+		-- ============================================================================
+		-- SCRIPT EXTRACTION
+		-- ============================================================================
+		local extractedScripts = {}
+		local scriptCounter = 0
 
-			-- ── Recursive GUI code generator ──────────────────────────────
-			local flatCounter = {n = 0}
-			local function newVar(base)
-				flatCounter.n += 1
-				-- sanitize name: strip non-identifier chars, prefix if needed
-				local safe = (base or "obj"):gsub("[^%w_]","_"):gsub("^(%d)","_%1")
-				return safe .. "_" .. flatCounter.n
-			end
+		local function extractScript(scriptObj, parentVar)
+		scriptCounter = scriptCounter + 1
+		local scriptVar = "script_" .. scriptCounter
 
-			local codeLines = {}
-			local function emit(s) codeLines[#codeLines+1] = s end
+		local source = ""
+		local success, result = pcall(function()
+		return scriptObj.Source or decompile(scriptObj)
+		end)
 
-			-- Default values we skip to keep output clean
-			local SKIP_DEFAULTS = {
-				Visible                 = true,
-				BackgroundTransparency  = 0,
-				TextTransparency        = 0,
-				ImageTransparency       = 0,
-				TextStrokeTransparency  = 1,
-				BorderSizePixel         = 1,
-				ZIndex                  = 1,
-				LayoutOrder             = 0,
-				Rotation                = 0,
-				AutomaticSize           = Enum.AutomaticSize.None,
-				AnchorPoint             = Vector2.new(0,0),
-				ClipsDescendants        = false,
-				Active                  = false,
-				Selectable              = false,
-				RichText                = false,
-				TextWrapped             = false,
-				TextScaled              = false,
-				TextXAlignment          = Enum.TextXAlignment.Center,
-				TextYAlignment          = Enum.TextYAlignment.Center,
-				AutoButtonColor         = true,
-				Enabled                 = true,
-				ResetOnSpawn            = true,
-				DisplayOrder            = 0,
-				IgnoreGuiInset          = false,
-			}
-			local function shouldSkip(propName, val)
-				local def = SKIP_DEFAULTS[propName]
-				if def == nil then return false end
-				if typeof(def) ~= typeof(val) then return false end
-				if typeof(val) == "Vector2" then
-					return val.X == def.X and val.Y == def.Y
-				end
-				return val == def
-			end
+		if success and result and result ~= "" then
+		source = result
+		else
+		source = "-- [PROTECTED/EMPTY SCRIPT]\n-- Could not extract source"
+		end
 
-			local function generateGuiCode(obj, parentVar)
-				local cls = obj.ClassName
-				-- Scripts handled separately
-				if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
-					extractScript(obj, parentVar)
-					return
-				end
-				local varName = newVar(obj.Name)
-				instanceToVar[obj] = varName
-				-- Create + parent immediately so constraints work
-				emit(("local %s = Instance.new(%q)"):format(varName, cls))
-				emit(("%s.Parent = %s"):format(varName, parentVar))
-				-- Properties
-				local props = getProps(obj)
-				for _, propName in ipairs(props) do
-					if propName == "Name" and obj.Name == cls then continue end
-					local ok, val = pcall(function() return obj[propName] end)
-					if ok and val ~= nil then
-						if not shouldSkip(propName, val) then
-							local s = serialize(val)
-							if s ~= "nil" then
-								emit(("%s.%s = %s"):format(varName, propName, s))
-							end
-						end
-					end
-				end
-				-- Recurse
-				for _, child in ipairs(obj:GetChildren()) do
-					generateGuiCode(child, varName)
-				end
-			end
+		table.insert(extractedScripts, {
+		var = scriptVar,
+		parent = parentVar,
+		className = scriptObj.ClassName,
+		name = scriptObj.Name,
+		source = source,
+		enabled = scriptObj.Enabled or scriptObj.Disabled == false
+		})
 
-			-- ── Generate ─────────────────────────────────────────────────
-			-- Build the GUI structure
-			emit("local Players = game:GetService(\"Players\")")
-			emit("local player = Players.LocalPlayer")
-			emit("local playerGui = player:WaitForChild(\"PlayerGui\")")
-			emit("")
-			emit("-- ── GUI Structure ──────────────────────────────────────")
-			emit("local function createGui()")
+		return scriptVar
+		end
 
-			-- Generate the ScreenGui itself
-			local sgVar = newVar(gui.Name)
-			instanceToVar[gui] = sgVar
-			emit(("\tlocal %s = Instance.new(\"ScreenGui\")"):format(sgVar))
-			local sgProps = getProps(gui)
-			for _, propName in ipairs(sgProps) do
-				local ok, val = pcall(function() return gui[propName] end)
-				if ok and val ~= nil then
-					if not shouldSkip(propName, val) then
-						local s = serialize(val)
-						if s ~= "nil" then
-							emit(("\t%s.%s = %s"):format(sgVar, propName, s))
-						end
-					end
-				end
-			end
+		-- ============================================================================
+		-- RECURSIVE GUI CODE GENERATOR (WITH SCRIPTS)
+		-- ============================================================================
+		local function generateGuiCode(obj, indent, varName, varCounter)
+		local code = ""
+		local objType = obj.ClassName
+		varCounter = varCounter or {count = 0}
 
-			-- Temporarily redirect emit to tab-indented
-			local savedLines = codeLines
-			codeLines = {}
-			for _, child in ipairs(gui:GetChildren()) do
-				generateGuiCode(child, sgVar)
-			end
-			local bodyLines = codeLines
-			codeLines = savedLines
-			for _, l in ipairs(bodyLines) do
-				emit("\t" .. l)
-			end
+		-- Skip if it's a script (we handle those separately)
+		if objType == "LocalScript" or objType == "Script" or objType == "ModuleScript" then
+		extractScript(obj, varName)
+		return ""
+		end
 
-			emit(("\t%s.Parent = playerGui"):format(sgVar))
-			emit(("\treturn %s"):format(sgVar))
-			emit("end")
-			emit("")
+		-- Create object
+		code = code .. indent .. "local " .. varName .. " = Instance.new(\"" .. objType .. "\")\n"
 
-			-- Scripts section
-			if #extractedScripts > 0 then
-				emit(("-- ── Extracted Scripts (%d found) ─────────────────────"):format(#extractedScripts))
-				for i, sd in ipairs(extractedScripts) do
-					emit(("-- Script %d: %s (%s)"):format(i, sd.name, sd.className))
-					emit(("local function runScript_%d(script_obj)"):format(i))
-					emit("\t-- NOTE: 'script' here refers to script_obj, not the original instance.")
-					emit("\tlocal script = script_obj")
-					for line in (sd.source .. "\n"):gmatch("[^\n]*\n") do
-						emit("\t" .. line:gsub("\n$",""))
-					end
-					emit("end")
-					emit("")
-				end
-			end
+		-- Get properties for this object type
+		local properties = getPropertiesForObject(obj)
 
-			-- Init
-			emit("-- ── Init ────────────────────────────────────────────────")
-			emit("local gui = createGui()")
-			emit("")
-			if #extractedScripts > 0 then
-				for i, sd in ipairs(extractedScripts) do
-					-- Use the actual instance name for FindFirstChild so it works at runtime
-					local parentRef
-					if sd.parent == sgVar then
-						parentRef = "gui"
-					else
-						parentRef = ("gui:FindFirstChild(%q, true)"):format(
-							-- extract the real name from the varName prefix
-							sd.parent:match("^(.+)_%d+$") or sd.parent)
-					end
-					emit(("-- Run: %s"):format(sd.name))
-					emit("task.spawn(function()")
-					emit(("\tlocal parent = %s"):format(parentRef))
-					emit("\tif parent then")
-					emit(("\t\trunScript_%d(parent)"):format(i))
-					emit("\telse")
-					emit(("\t\twarn('[DeepGUI] Parent not found for script: %s')"):format(sd.name))
-					emit("\tend")
-					emit("end)")
-					emit("")
-				end
-			end
+		-- Set properties
+		for _, propName in ipairs(properties) do
+		local success, prop = pcall(function() return obj[propName] end)
+		if success and prop ~= nil then
+		-- Skip default values
+		local shouldSet = true
+		if objType == "ScreenGui" and propName == "Enabled" and prop == true then shouldSet = false end
+		if objType == "ScreenGui" and propName == "DisplayOrder" and prop == 0 then shouldSet = false end
+		if (objType == "TextLabel" or objType == "TextButton") and propName == "TextWrapped" and prop == false then shouldSet = false end
+		if (objType == "TextLabel" or objType == "TextButton") and propName == "TextScaled" and prop == false then shouldSet = false end
+		if propName == "Visible" and prop == true then shouldSet = false end
+		if propName == "BackgroundTransparency" and prop == 0 then shouldSet = false end
+		if propName == "BorderSizePixel" and prop == 1 then shouldSet = false end
 
-			-- ── Assemble output ───────────────────────────────────────────
-			local header = table.concat({
-				"--[[",
-				"    ╔═══════════════════════════════════════════════════════╗",
-				"    ║         DEEP GUI CONVERTER  (zukv2)                   ║",
-				"    ╚═══════════════════════════════════════════════════════╝",
-				"    ScreenGui : " .. gui.Name,
-				"    Extracted : " .. os.date("%Y-%m-%d %H:%M:%S"),
-				"    Scripts   : " .. #extractedScripts,
-				"--]]",
-				"",
-			}, "\n")
-			local output = header .. table.concat(codeLines, "\n")
+		if shouldSet then
+		code = code .. indent .. varName .. "." .. propName .. " = " .. serialize(prop) .. "\n"
+		end
+		end
+		end
 
-			-- Show in Notepad
-			ScriptViewer.ViewRaw(output)
+		-- Recursively add children
+		local children = obj:GetChildren()
+		for i, child in ipairs(children) do
+		local childType = child.ClassName
 
-			-- Copy to clipboard
-			local copied = false
-			if env.setclipboard then
-				copied = pcall(env.setclipboard, output)
-			end
-			if not copied then
-				pcall(setclipboard, output)
-			end
+		if childType == "LocalScript" or childType == "Script" or childType == "ModuleScript" then
+		-- Extract script but don't generate GUI code for it
+		extractScript(child, varName)
+		else
+		varCounter.count = varCounter.count + 1
+		local childVar = varName .. "_" .. varCounter.count
 
-			if getgenv().DoNotif then
-				getgenv().DoNotif(
-					("✓ GUI converted — %d element(s), %d script(s)"):format(
-						flatCounter.n, #extractedScripts), 4)
-			end
+		code = code .. generateGuiCode(child, indent, childVar, varCounter)
+		code = code .. indent .. childVar .. ".Parent = " .. varName .. "\n"
+		end
+		end
+
+		return code
+		end
+
+		-- ============================================================================
+		-- GENERATE FULL OUTPUT
+		-- ============================================================================
+		local output = "--[[\n"
+		output = output .. "    ╔═══════════════════════════════════════════════════════╗\n"
+		output = output .. "    ║      DEEP GUI CONVERTER                               ║\n"
+		output = output .. "    ╚═══════════════════════════════════════════════════════╝\n"
+		output = output .. "    \n"
+		output = output .. "    ScreenGui: " .. gui.Name .. "\n"
+		output = output .. "    Extracted: " .. os.date("%Y-%m-%d %H:%M:%S") .. "\n"
+		output = output .. "    Engine:    ZukaTech Deep GUI v1.0\n"
+		output = output .. "    \n"
+		output = output .. "    This script recreates the FULL GUI including:\n"
+		output = output .. "    - All GUI elements and properties\n"
+		output = output .. "    - LocalScripts and their functionality\n"
+		output = output .. "    - Event connections (if extractable)\n"
+		output = output .. "--]]\n\n"
+
+		output = output .. "local Players = game:GetService(\"Players\")\n"
+		output = output .. "local player = Players.LocalPlayer\n"
+		output = output .. "local screenGui\n\n"
+
+		output = output .. "-- ============================================================================\n"
+		output = output .. "-- GUI STRUCTURE\n"
+		output = output .. "-- ============================================================================\n"
+		output = output .. "local function createGui()\n"
+		output = output .. generateGuiCode(gui, "  ", "screenGui")
+		output = output .. "  screenGui.Parent = player:WaitForChild(\"PlayerGui\")\n"
+		output = output .. "  return screenGui\n"
+		output = output .. "end\n\n"
+
+		-- ============================================================================
+		-- ADD EXTRACTED SCRIPTS
+		-- ============================================================================
+		if #extractedScripts > 0 then
+		output = output .. "-- ============================================================================\n"
+		output = output .. "-- EXTRACTED SCRIPTS (" .. #extractedScripts .. " found)\n"
+		output = output .. "-- ============================================================================\n\n"
+
+		for i, scriptData in ipairs(extractedScripts) do
+		output = output .. "-- Script #" .. i .. ": " .. scriptData.name .. " (" .. scriptData.className .. ")\n"
+		output = output .. "local function " .. scriptData.var .. "_func(parent)\n"
+
+		-- Indent the script source
+		local indentedSource = scriptData.source:gsub("\n", "\n  ")
+		output = output .. "  " .. indentedSource .. "\n"
+
+		output = output .. "end\n\n"
+		end
+
+		output = output .. "-- ============================================================================\n"
+		output = output .. "-- INITIALIZE GUI + SCRIPTS\n"
+		output = output .. "-- ============================================================================\n"
+		output = output .. "local gui = createGui()\n\n"
+
+		for i, scriptData in ipairs(extractedScripts) do
+		output = output .. "-- Run: " .. scriptData.name .. "\n"
+
+		-- Try to find the parent element by variable name
+		local parentRef = scriptData.parent == "screenGui" and "gui" or "gui:FindFirstChild(\"" .. scriptData.parent .. "\", true)"
+
+		output = output .. "task.spawn(function()\n"
+		output = output .. "  local parent = " .. parentRef .. "\n"
+		output = output .. "  if parent then\n"
+		output = output .. "    " .. scriptData.var .. "_func(parent)\n"
+		output = output .. "  else\n"
+		output = output .. "    warn('[Deep GUI] Could not find parent for " .. scriptData.name .. "')\n"
+		output = output .. "  end\n"
+		output = output .. "end)\n\n"
+		end
+		else
+		output = output .. "-- No scripts found in this GUI\n"
+		output = output .. "createGui()\n"
+		end
+
+		-- ============================================================================
+		-- OUTPUT
+		-- ============================================================================
+		print("\n" .. string.rep("=", 70))
+		print("[ZUKATECH DEEP GUI CONVERTER]")
+		print(string.rep("=", 70))
+		print("GUI: " .. gui.Name)
+		print("Scripts found: " .. #extractedScripts)
+		print(string.rep("-", 70))
+		print(output)
+		print(string.rep("=", 70) .. "\n")
+
+		-- Clipboard
+		local clipboardSuccess = false
+		local clipboardFuncs = {
+		function() setclipboard(output) end,
+		function() env.setclipboard(output) end,
+		function() getgenv().setclipboard(output) end,
+		function() syn.write_clipboard(output) end,
+		}
+
+		for _, func in ipairs(clipboardFuncs) do
+		if pcall(func) then
+		clipboardSuccess = true
+		break
+		end
+		end
+
+		if getgenv().DoNotif then
+		if clipboardSuccess then
+		getgenv().DoNotif("✓ Deep GUI script copied! (" .. #extractedScripts .. " scripts)", 3)
+		else
+		getgenv().DoNotif("⚠ Generated but clipboard failed", 3)
+		end
+		end
 		end
 		})
 
@@ -4691,7 +4574,7 @@ end
 				local okBC, bytecode = pcall(env.getscriptbytecode, target)
 				if not (okBC and bytecode and bytecode ~= "") then return nil end
 				local opts = {
-					DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+					DecompilerMode="disasm", DecompilerTimeout=15,
 					ReaderFloatPrecision=7, ShowDebugInformation=false,
 					ShowTrivialOperations=false, ShowInstructionLines=true,
 					ShowOperationIndex=true, ShowOperationNames=true,
@@ -15970,9 +15853,8 @@ end
 
 local function main()
 
-	-- ── zukv2 decompiler core (updated) ──────────────────────────────
+	-- ── zukv2 decompiler core ──────────────────────────────────────────
 	local ZukDecompile
-	local prettyPrint
 	do
 	local FLOAT_PRECISION = 7
 	local Reader = {}
@@ -16030,8 +15912,15 @@ local function main()
 		return self
 	end
 	function Reader:Set(fp) FLOAT_PRECISION = fp end
+	local MemeStrings = {
+		" decompiled with zukas decompiler",
+		" DISASSEMBLED...",
+		" params : ...",
+		" " .. os.date(),
+		" zukv2",
+	}
 	local Strings = {
-		SUCCESS              = "%s",  -- no meme header; callers add their own metadata
+		SUCCESS              = "--" .. MemeStrings[math.random(#MemeStrings)] .. "\n%s",
 		TIMEOUT              = "-- DECOMPILER TIMEOUT",
 		COMPILATION_FAILURE  = "-- SCRIPT FAILED TO COMPILE, ERROR:\n%s",
 		UNSUPPORTED_LBC_VERSION = "-- PASSED BYTECODE IS TOO OLD AND IS NOT SUPPORTED",
@@ -16227,15 +16116,14 @@ local function main()
 		DecompilerTimeout    = 10,
 		DecompilerMode       = "disasm",
 		ReaderFloatPrecision = 7,
-		ShowDebugInformation = false,
-		ShowInstructionLines = false,
-		ShowOperationIndex   = false,
-		ShowOperationNames   = false,
+		ShowDebugInformation = true,
+		ShowInstructionLines = true,
+		ShowOperationIndex   = true,
+		ShowOperationNames   = true,
 		ShowTrivialOperations= false,
 		UseTypeInfo          = true,
 		ListUsedGlobals      = true,
 		ReturnElapsedTime    = false,
-		CleanMode            = true,  -- strip prefix, use debug names, suppress boilerplate
 	}
 	local LuauCompileUserdataInfo = true
 	pcall(function()
@@ -16660,57 +16548,14 @@ local function main()
 					totalParameters += numParams
 					if proto.main and pflags and pflags.native then emit("--!native\n") end
 	
-					-- ── Debug name lookups ────────────────────────────────────────────
-					-- Build register-name map from debugLocals: reg → name at a given PC
-					local function buildRegNames(instrIdx)
-						local names = {}
-						if proto.debugLocals then
-							for _, dl in ipairs(proto.debugLocals) do
-								if instrIdx >= dl.startPC and instrIdx <= dl.endPC then
-									names[dl.register] = dl.name
-								end
-							end
-						end
-						return names
-					end
-					-- Upvalue names from debugUpvalues
-					local function fmtUpv(r)
-						local du = proto.debugUpvalues
-						if du and du[r+1] and du[r+1].name ~= "" then
-							return du[r+1].name
-						end
-						return "upv_"..r
-					end
-					-- Register name: prefer debug name, fall back to p/v scheme
-					local regNameCache = {}
-					local function fmtReg(r, instrIdx)
-						if instrIdx and proto.debugLocals then
-							local cached = regNameCache[instrIdx]
-							if not cached then
-								cached = buildRegNames(instrIdx)
-								regNameCache[instrIdx] = cached
-							end
-							if cached[r] and cached[r] ~= "" then
-								return cached[r]
-							end
-						end
+					local function fmtReg(r)
 						local pr = r+1
 						if pr < numParams+1 then
 							return "p"..((totalParameters-numParams)+pr)
 						end
 						return "v"..(r-numParams)
 					end
-					-- Param name helper (for fmtProto)
-					local function paramName(j)
-						if proto.debugLocals then
-							for _, dl in ipairs(proto.debugLocals) do
-								if dl.startPC == 0 and dl.register == j-1 then
-									return dl.name
-								end
-							end
-						end
-						return "p"..(totalParameters+j)
-					end
+					local function fmtUpv(r) return "u_v"..r end
 					local function fmtConst(k)
 						if not k then return "nil" end
 						if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then
@@ -16734,7 +16579,7 @@ local function main()
 						else body="function" end
 						body ..= "("
 						for j=1,p.numParams do
-							local pb=paramName(j)
+							local pb="p"..(totalParameters+j)
 							if p.hasTypeInfo and options.UseTypeInfo and p.typedParams and p.typedParams[j] then
 								pb ..= ": "..Luau:GetBaseTypeString(p.typedParams[j],true)
 							end
@@ -16773,12 +16618,6 @@ local function main()
 	
 						end
 					end
-					-- Instructions that are pure VM bookkeeping in clean mode
-					local CLEAN_SUPPRESS = {
-						CLOSEUPVALS=true, PREPVARARGS=true, COVERAGE=true,
-						CAPTURE=true, FASTCALL=true, FASTCALL1=true,
-						FASTCALL2=true, FASTCALL2K=true, FASTCALL3=true,
-					}
 					for i, action in ipairs(actions) do
 						if action.hide then continue end
 						local ur  = action.usedRegisters
@@ -16786,23 +16625,6 @@ local function main()
 						local oci = action.opCode
 						if not oci then continue end
 						local opn = oci.name
-						-- clean mode: skip pure bookkeeping ops
-						if options.CleanMode and CLEAN_SUPPRESS[opn] then continue end
-						-- clean mode: skip bare RETURN with no value at end of proto
-						if options.CleanMode and opn == "RETURN" then
-							local b = ed and ed[1] or 0
-							if b == 1 then continue end  -- RETURN with B=1 means return nothing
-						end
-						-- clean mode: skip MOVE that just wires up a closure assignment
-						-- (those are handled inside writeProto already)
-						if options.CleanMode and opn == "MOVE" and
-						   i > 1 and actions[i-1] and
-						   (actions[i-1].opCode.name == "NEWCLOSURE" or
-						    actions[i-1].opCode.name == "DUPCLOSURE") then
-							continue
-						end
-						-- resolve register names at this instruction index
-						local function R(r) return fmtReg(r, i) end
 						local function handleJumps()
 							local n = jumpMarkers[i]
 							if n then
@@ -16811,47 +16633,48 @@ local function main()
 	
 							end
 						end
-						if not options.CleanMode then
-							if options.ShowOperationIndex then
-								emit("["..padLeft(i,"0",3).."] ")
-							end
-							if options.ShowInstructionLines and lineInfo and lineInfo[i] then
-								emit(":"..padLeft(lineInfo[i],"0",3)..":")
-							end
-							if options.ShowOperationNames then
-								emit(padRight(opn," ",15))
-							end
+						if options.ShowOperationIndex then
+							emit("["..padLeft(i,"0",3).."] ")
+	
 						end
-						if opn=="LOADNIL" then emit(R(ur[1]).." = nil")
+						if options.ShowInstructionLines and lineInfo and lineInfo[i] then
+							emit(":"..padLeft(lineInfo[i],"0",3)..":")
+	
+						end
+						if options.ShowOperationNames then
+							emit(padRight(opn," ",15))
+	
+						end
+						if opn=="LOADNIL" then emit(fmtReg(ur[1]).." = nil")
 	
 						elseif opn=="LOADB" then
-							emit(R(ur[1]).." = "..toEscapedString(toBoolean(ed[1])))
+							emit(fmtReg(ur[1]).." = "..toEscapedString(toBoolean(ed[1])))
 	
 							if ed[2]~=0 then emit(" +"..ed[2]) end
 	
-						elseif opn=="LOADN" then emit(R(ur[1]).." = "..ed[1])
+						elseif opn=="LOADN" then emit(fmtReg(ur[1]).." = "..ed[1])
 	
-						elseif opn=="LOADK" then emit(R(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="LOADK" then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="MOVE"  then emit(R(ur[1]).." = "..R(ur[2]))
+						elseif opn=="MOVE"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]))
 	
 						elseif opn=="GETGLOBAL" then
 							local gk=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
 							if options.ListUsedGlobals and isValidGlobal(gk) then
 								table.insert(usedGlobals,gk); usedGlobalsSet[gk]=true
 							end
-							emit(R(ur[1]).." = "..gk)
+							emit(fmtReg(ur[1]).." = "..gk)
 	
 						elseif opn=="SETGLOBAL" then
 							local gk=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
 							if options.ListUsedGlobals and isValidGlobal(gk) then
 								table.insert(usedGlobals,gk); usedGlobalsSet[gk]=true
 							end
-							emit(gk.." = "..R(ur[1]))
+							emit(gk.." = "..fmtReg(ur[1]))
 	
-						elseif opn=="GETUPVAL" then emit(R(ur[1]).." = "..fmtUpv(caps[ed[1]]))
+						elseif opn=="GETUPVAL" then emit(fmtReg(ur[1]).." = "..fmtUpv(caps[ed[1]]))
 	
-						elseif opn=="SETUPVAL" then emit(fmtUpv(caps[ed[1]]).." = "..R(ur[1]))
+						elseif opn=="SETUPVAL" then emit(fmtUpv(caps[ed[1]]).." = "..fmtReg(ur[1]))
 	
 						elseif opn=="CLOSEUPVALS" then emit("-- clear captures from back until: "..ur[1])
 	
@@ -16861,27 +16684,27 @@ local function main()
 							if totalIdx==1 and options.ListUsedGlobals and isValidGlobal(imp) then
 								table.insert(usedGlobals,imp); usedGlobalsSet[imp]=true
 							end
-							emit(R(ur[1]).." = "..imp)
+							emit(fmtReg(ur[1]).." = "..imp)
 	
 						elseif opn=="GETTABLE" then
-							emit(R(ur[1]).." = "..R(ur[2]).."["..R(ur[3]).."]")
+							emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..fmtReg(ur[3]).."]")
 	
 						elseif opn=="SETTABLE" then
-							emit(R(ur[2]).."["..R(ur[3]).."] = "..R(ur[1]))
+							emit(fmtReg(ur[2]).."["..fmtReg(ur[3]).."] = "..fmtReg(ur[1]))
 	
 						elseif opn=="GETTABLEKS" then
 							local key = consts[ed[2]+1] and consts[ed[2]+1].value
-							emit(R(ur[1]).." = "..R(ur[2])..formatIndexString(key))
+							emit(fmtReg(ur[1]).." = "..fmtReg(ur[2])..formatIndexString(key))
 	
 						elseif opn=="SETTABLEKS" then
 							local key = consts[ed[2]+1] and consts[ed[2]+1].value
-							emit(R(ur[2])..formatIndexString(key).." = "..R(ur[1]))
+							emit(fmtReg(ur[2])..formatIndexString(key).." = "..fmtReg(ur[1]))
 	
 						elseif opn=="GETTABLEN" then
-							emit(R(ur[1]).." = "..R(ur[2]).."["..(ed[1]+1).."]")
+							emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..(ed[1]+1).."]")
 	
 						elseif opn=="SETTABLEN" then
-							emit(R(ur[2]).."["..(ed[1]+1).."] = "..R(ur[1]))
+							emit(fmtReg(ur[2]).."["..(ed[1]+1).."] = "..fmtReg(ur[1]))
 	
 						elseif opn=="NEWCLOSURE" then
 							local p2=inner[ed[1]+1]; if p2 then writeProto(ur[1],p2) end
@@ -16908,17 +16731,17 @@ local function main()
 							elseif nRes>0 then
 								local rb=""
 								for k=1,nRes do
-									rb..=R(baseR+k-1)
+									rb..=fmtReg(baseR+k-1)
 									if k~=nRes then rb..=", " end
 								end
 								callBody=rb.." = "
 							end
-							callBody ..= R(baseR)..nmMethod.."("
+							callBody ..= fmtReg(baseR)..nmMethod.."("
 							if nArgs==-1 then callBody..="..."
 							elseif nArgs>0 then
 								local ab=""
 								for k=1,nArgs do
-									ab..=R(baseR+k+argOff)
+									ab..=fmtReg(baseR+k+argOff)
 									if k~=nArgs then ab..=", " end
 								end
 								callBody..=ab
@@ -16929,11 +16752,11 @@ local function main()
 						elseif opn=="RETURN" then
 							local baseR=ur[1]; local tot=ed[1]-2
 							local rb=""
-							if tot==-2 then rb=" "..R(baseR)..", ..."
+							if tot==-2 then rb=" "..fmtReg(baseR)..", ..."
 							elseif tot>-1 then
 								rb=" "
 								for k=0,tot do
-									rb..=R(baseR+k)
+									rb..=fmtReg(baseR+k)
 									if k~=tot then rb..=", " end
 								end
 							end
@@ -16945,67 +16768,67 @@ local function main()
 	
 						elseif opn=="JUMPIF" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if not "..R(ur[1]).." then -- goto #"..ei)
+							emit("if not "..fmtReg(ur[1]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFNOT" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFEQ" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." == "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." == "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFLE" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." >= "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." >= "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFLT" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." > "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." > "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFNOTEQ" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." ~= "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." ~= "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFNOTLE" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." <= "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." <= "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
 						elseif opn=="JUMPIFNOTLT" then
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." < "..R(ur[2]).." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." < "..fmtReg(ur[2]).." then -- goto #"..ei)
 	
-						elseif opn=="ADD"  then emit(R(ur[1]).." = "..R(ur[2]).." + "..R(ur[3]))
+						elseif opn=="ADD"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtReg(ur[3]))
 	
-						elseif opn=="SUB"  then emit(R(ur[1]).." = "..R(ur[2]).." - "..R(ur[3]))
+						elseif opn=="SUB"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtReg(ur[3]))
 	
-						elseif opn=="MUL"  then emit(R(ur[1]).." = "..R(ur[2]).." * "..R(ur[3]))
+						elseif opn=="MUL"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtReg(ur[3]))
 	
-						elseif opn=="DIV"  then emit(R(ur[1]).." = "..R(ur[2]).." / "..R(ur[3]))
+						elseif opn=="DIV"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtReg(ur[3]))
 	
-						elseif opn=="MOD"  then emit(R(ur[1]).." = "..R(ur[2]).." % "..R(ur[3]))
+						elseif opn=="MOD"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtReg(ur[3]))
 	
-						elseif opn=="POW"  then emit(R(ur[1]).." = "..R(ur[2]).." ^ "..R(ur[3]))
+						elseif opn=="POW"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtReg(ur[3]))
 	
-						elseif opn=="ADDK" then emit(R(ur[1]).." = "..R(ur[2]).." + "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="ADDK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="SUBK" then emit(R(ur[1]).." = "..R(ur[2]).." - "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="SUBK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="MULK" then emit(R(ur[1]).." = "..R(ur[2]).." * "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="MULK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="DIVK" then emit(R(ur[1]).." = "..R(ur[2]).." / "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="DIVK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="MODK" then emit(R(ur[1]).." = "..R(ur[2]).." % "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="MODK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="POWK" then emit(R(ur[1]).." = "..R(ur[2]).." ^ "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="POWK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="AND"  then emit(R(ur[1]).." = "..R(ur[2]).." and "..R(ur[3]))
+						elseif opn=="AND"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtReg(ur[3]))
 	
-						elseif opn=="OR"   then emit(R(ur[1]).." = "..R(ur[2]).." or "..R(ur[3]))
+						elseif opn=="OR"   then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtReg(ur[3]))
 	
-						elseif opn=="ANDK" then emit(R(ur[1]).." = "..R(ur[2]).." and "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="ANDK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtConst(consts[ed[1]+1]))
 	
-						elseif opn=="ORK"  then emit(R(ur[1]).." = "..R(ur[2]).." or "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="ORK"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtConst(consts[ed[1]+1]))
 	
 						elseif opn=="CONCAT" then
 							local tgt=table.remove(ur,1)
@@ -17013,16 +16836,16 @@ local function main()
 							for k,r in ipairs(ur) do
 								cb..=fmtReg(r); if k~=#ur then cb..=" .. " end
 							end
-							emit(R(tgt).." = "..cb)
+							emit(fmtReg(tgt).." = "..cb)
 	
-						elseif opn=="NOT"    then emit(R(ur[1]).." = not "..R(ur[2]))
+						elseif opn=="NOT"    then emit(fmtReg(ur[1]).." = not "..fmtReg(ur[2]))
 	
-						elseif opn=="MINUS"  then emit(R(ur[1]).." = -"..R(ur[2]))
+						elseif opn=="MINUS"  then emit(fmtReg(ur[1]).." = -"..fmtReg(ur[2]))
 	
-						elseif opn=="LENGTH" then emit(R(ur[1]).." = #"..R(ur[2]))
+						elseif opn=="LENGTH" then emit(fmtReg(ur[1]).." = #"..fmtReg(ur[2]))
 	
 						elseif opn=="NEWTABLE" then
-							emit(R(ur[1]).." = {}")
+							emit(fmtReg(ur[1]).." = {}")
 	
 							if options.ShowDebugInformation and ed[2] and ed[2]>0 then
 								emit(" ")
@@ -17036,27 +16859,27 @@ local function main()
 									tb..=fmtConst(consts[cv.value.keys[k]])
 									if k~=cv.value.size then tb..=", " end
 								end
-								emit(R(ur[1]).." = {} -- "..tb.."}")
+								emit(fmtReg(ur[1]).." = {} -- "..tb.."}")
 	
-							else emit(R(ur[1]).." = {}") end
+							else emit(fmtReg(ur[1]).." = {}") end
 	
 						elseif opn=="SETLIST" then
 							local tgt=ur[1]; local src=ur[2]
 							local si=ed[1]; local vc=ed[2]
 							if vc==0 then
-								emit(R(tgt).."["..si.."] = [...]")
+								emit(fmtReg(tgt).."["..si.."] = [...]")
 	
 							else
 								local tot2=#ur-1; local cb=""
 								for k=1,tot2 do
-									cb..=R(ur[k]).."["..(si+k-1).."] = "..R(src+k-1)
+									cb..=fmtReg(ur[k]).."["..(si+k-1).."] = "..fmtReg(src+k-1)
 									if k~=tot2 then cb..="\n" end
 								end
 								emit(cb)
 	
 							end
 						elseif opn=="FORNPREP" then
-							emit("for "..R(ur[3]).." = "..R(ur[3])..", "..R(ur[1])..", "..R(ur[2]).." do -- end at #"..(i+ed[1]))
+							emit("for "..fmtReg(ur[3]).." = "..fmtReg(ur[3])..", "..fmtReg(ur[1])..", "..fmtReg(ur[2]).." do -- end at #"..(i+ed[1]))
 						elseif opn=="FORNLOOP" then
 							emit("end -- iterate + jump to #"..(i+ed[1]))
 	
@@ -17065,11 +16888,11 @@ local function main()
 	
 						elseif opn=="FORGPREP_INEXT" then
 							local tr=ur[1]+1
-							emit("for "..R(tr+2)..", "..R(tr+3).." in ipairs("..R(tr)..") do")
+							emit("for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in ipairs("..fmtReg(tr)..") do")
 	
 						elseif opn=="FORGPREP_NEXT" then
 							local tr=ur[1]+1
-							emit("for "..R(tr+2)..", "..R(tr+3).." in pairs("..R(tr)..") do")
+							emit("for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in pairs("..fmtReg(tr)..") do")
 	
 						elseif opn=="FORGPREP" then
 							local ei=i+ed[1]+2
@@ -17080,22 +16903,22 @@ local function main()
 									vb..=fmtReg(r); if k~=#ea.usedRegisters then vb..=", " end
 								end
 							end
-							emit("for "..vb.." in "..R(ur[1]).." do -- end at #"..ei)
+							emit("for "..vb.." in "..fmtReg(ur[1]).." do -- end at #"..ei)
 	
 						elseif opn=="GETVARARGS" then
 							local vc2=ed[1]-1
 							local rb=""
-							if vc2==-1 then rb=R(ur[1])
+							if vc2==-1 then rb=fmtReg(ur[1])
 							else
 								for k=1,vc2 do
-									rb..=R(ur[k]); if k~=vc2 then rb..=", " end
+									rb..=fmtReg(ur[k]); if k~=vc2 then rb..=", " end
 								end
 							end
 							emit(rb.." = ...")
 	
 						elseif opn=="PREPVARARGS" then emit("-- ... ; number of fixed args: "..ed[1])
 	
-						elseif opn=="LOADKX" then emit(R(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="LOADKX" then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
 	
 						elseif opn=="JUMPX"    then emit("-- jump to #"..(i+ed[1]))
 	
@@ -17105,14 +16928,14 @@ local function main()
 							local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 							local sign=rev and "~=" or "=="
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." "..sign.." nil then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." "..sign.." nil then -- goto #"..ei)
 	
 						elseif opn=="JUMPXEQKB" then
 							local val=tostring(toBoolean(bit32.band(ed[2] or 0,1)))
 							local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 							local sign=rev and "~=" or "=="
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
 	
 						elseif opn=="JUMPXEQKN" or opn=="JUMPXEQKS" then
 							local cidx=bit32.band(ed[2] or 0,0xFFFFFF)
@@ -17120,29 +16943,29 @@ local function main()
 							local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 							local sign=rev and "~=" or "=="
 							local ei=i+ed[1]; makeJump(ei)
-							emit("if "..R(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
+							emit("if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
 	
 						elseif opn=="CAPTURE"  then emit("-- upvalue capture")
 	
-						elseif opn=="SUBRK"    then emit(R(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." - "..R(ur[2]))
+						elseif opn=="SUBRK"    then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." - "..fmtReg(ur[2]))
 	
-						elseif opn=="DIVRK"    then emit(R(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." / "..R(ur[2]))
+						elseif opn=="DIVRK"    then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." / "..fmtReg(ur[2]))
 	
-						elseif opn=="IDIV"     then emit(R(ur[1]).." = "..R(ur[2]).." // "..R(ur[3]))
+						elseif opn=="IDIV"     then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtReg(ur[3]))
 	
-						elseif opn=="IDIVK"    then emit(R(ur[1]).." = "..R(ur[2]).." // "..fmtConst(consts[ed[1]+1]))
+						elseif opn=="IDIVK"    then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtConst(consts[ed[1]+1]))
 	
 						elseif opn=="FASTCALL" then emit("-- FASTCALL; "..Luau:GetBuiltinInfo(ed[1]).."()")
 	
-						elseif opn=="FASTCALL1" then emit("-- FASTCALL1; "..Luau:GetBuiltinInfo(ed[1]).."("..R(ur[1])..")")
+						elseif opn=="FASTCALL1" then emit("-- FASTCALL1; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..")")
 	
-						elseif opn=="FASTCALL2" then emit("-- FASTCALL2; "..Luau:GetBuiltinInfo(ed[1]).."("..R(ur[1])..", "..R(ur[2])..")")
+						elseif opn=="FASTCALL2" then emit("-- FASTCALL2; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..")")
 	
 						elseif opn=="FASTCALL2K" then
-							emit("-- FASTCALL2K; "..Luau:GetBuiltinInfo(ed[1]).."("..R(ur[1])..", "..fmtConst(consts[(ed[3] or 0)+1])..")")
+							emit("-- FASTCALL2K; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtConst(consts[(ed[3] or 0)+1])..")")
 	
 						elseif opn=="FASTCALL3" then
-							emit("-- FASTCALL3; "..Luau:GetBuiltinInfo(ed[1]).."("..R(ur[1])..", "..R(ur[2])..", "..R(ur[3])..")")
+							emit("-- FASTCALL3; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..", "..fmtReg(ur[3])..")")
 	
 						end
 						emit("\n")
@@ -17326,29 +17149,9 @@ local function main()
 		for i,proto in ipairs(parsed.protos) do walkProto(proto,i) end
 		return table.concat(lines,"\n")
 	end
-
-	local PP_INDENT = "    "  -- 4 spaces per level
-	
-	local function prettyPrint(text)
-		local result = {}
-		local depth  = 0
-	
-		local DEDENT_BEFORE      = { ["end"]=true, ["until"]=true }
-		local INDENT_AFTER       = { ["then"]=true, ["do"]=true, ["repeat"]=true }
-		local DEDENT_THEN_INDENT = { ["else"]=true, ["elseif"]=true }
-	
-		local function stripStrings(s)
-			-- remove string literals then line comments to get bare keyword tokens
-			s = s:gsub('"[^"\\]*(?:\\.[^"\\]*)*"', '""')
-			s = s:gsub("'[^'\\]*(?:\\.[^'\\]*)*'", "''")
-			s = s:gsub("%-%-.*$", "")  -- strip trailing comment
-			return s
-		end
-
 		ZukDecompile = Decompile
-		getgenv()._ZUK_DECOMPILE    = Decompile
-		getgenv()._ZUK_PRETTYPRINT  = prettyPrint
-	end
+		getgenv()._ZUK_DECOMPILE    = Decompile     -- expose for env.decompile override
+		getgenv()._ZUK_PRETTYPRINT  = prettyPrint   -- expose for env.decompile override
 	end
 	-- ── prettyPrint: adds indentation to disasm output ─────────────────────
 	local function prettyPrint(text)
@@ -18198,7 +18001,7 @@ Main = (function()
 				local okBC, bytecode = pcall(env.getscriptbytecode, scriptObj)
 				if okBC and bytecode and bytecode ~= "" then
 					local opts = {
-						DecompilerMode="disasm", DecompilerTimeout=15, CleanMode=true,
+						DecompilerMode="disasm", DecompilerTimeout=15,
 						ReaderFloatPrecision=7, ShowDebugInformation=false,
 						ShowTrivialOperations=false, ShowInstructionLines=true,
 						ShowOperationIndex=true, ShowOperationNames=true,
