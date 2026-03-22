@@ -1,3 +1,19 @@
+--[[
+
+for
+
+.____      ____  ___   ________ ________  
+|    |     \   \/  /  /  _____/ \_____  \ 
+|    |      \     /  /   __  \    _(__  < 
+|    |___   /     \  \  |__\  \  /       \
+|_______ \ /___/\  \  \_____  / /______  /
+        \/       \_/        \/         \/ 
+
+by zuka
+
+
+]]
+
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ReplicatedFirst   = game:GetService("ReplicatedFirst")
@@ -8,13 +24,19 @@ local Reader = {}
 function Reader.new(bytecode)
 	local stream = buffer.fromstring(bytecode)
 	local cursor = 0
+	local blen   = buffer.len(stream)
 	local self   = {}
-	function self:len()       return buffer.len(stream) end
+	local function guard(n)
+		if cursor + n > blen then
+			error(string.format("Reader OOB: need %d byte(s) at offset %d (buf len %d)", n, cursor, blen), 2)
+		end
+	end
+	function self:len()       return blen end
 	function self:nextByte()
-		local r = buffer.readu8(stream, cursor); cursor += 1; return r
+		guard(1); local r = buffer.readu8(stream, cursor); cursor += 1; return r
 	end
 	function self:nextSignedByte()
-		local r = buffer.readi8(stream, cursor);  cursor += 1; return r
+		guard(1); local r = buffer.readi8(stream, cursor); cursor += 1; return r
 	end
 	function self:nextBytes(count)
 		local t = {}
@@ -23,13 +45,13 @@ function Reader.new(bytecode)
 	end
 	function self:nextChar()     return string.char(self:nextByte()) end
 	function self:nextUInt32()
-		local r = buffer.readu32(stream, cursor); cursor += 4; return r
+		guard(4); local r = buffer.readu32(stream, cursor); cursor += 4; return r
 	end
 	function self:nextInt32()
-		local r = buffer.readi32(stream, cursor); cursor += 4; return r
+		guard(4); local r = buffer.readi32(stream, cursor); cursor += 4; return r
 	end
 	function self:nextFloat()
-		local r = buffer.readf32(stream, cursor); cursor += 4
+		guard(4); local r = buffer.readf32(stream, cursor); cursor += 4
 		return tonumber(string.format("%0."..FLOAT_PRECISION.."f", r))
 	end
 	function self:nextVarInt()
@@ -41,25 +63,24 @@ function Reader.new(bytecode)
 		end
 		return result
 	end
-	function self:nextString(len)
-		len = len or self:nextVarInt()
-		if len == 0 then return "" end
-		local r = buffer.readstring(stream, cursor, len); cursor += len; return r
+	function self:nextString(slen)
+		slen = slen or self:nextVarInt()
+		if slen == 0 then return "" end
+		guard(slen)
+		local r = buffer.readstring(stream, cursor, slen); cursor += slen; return r
 	end
 	function self:nextDouble()
-		local r = buffer.readf64(stream, cursor); cursor += 8; return r
+		guard(8); local r = buffer.readf64(stream, cursor); cursor += 8; return r
 	end
 	return self
 end
 function Reader:Set(fp) FLOAT_PRECISION = fp end
 local MemeStrings = {
-	" we lit",
-	" decompiled with zukas ez decompiler",
+	" decompiled with zukas decompiler",
 	" DISASSEMBLED...",
-	" Decompile these nuts",
 	" params : ...",
 	" " .. os.date(),
-	" your gay advert could be here"
+	" zukv2",
 }
 local Strings = {
 	SUCCESS              = "--" .. MemeStrings[math.random(#MemeStrings)] .. "\n%s",
@@ -660,9 +681,10 @@ local function Decompile(bytecode, options)
 	local function finalize(mainProtoId, registerActions, protoTable)
 		local finalResult = ""
 		local totalParameters = 0
-		local usedGlobals = {}
+		local usedGlobals    = {}
+		local usedGlobalsSet = {}
 		local function isValidGlobal(key)
-			for _, v in ipairs(usedGlobals) do if v==key then return false end end
+			if usedGlobalsSet[key] then return false end
 			return not isGlobal(key)
 		end
 		local function processResult(res)
@@ -673,7 +695,8 @@ local function Decompile(bytecode, options)
 			return embed .. res
 		end
 		if options.DecompilerMode == "disasm" then
-			local result = ""
+			local resultParts = {}
+			local function emit(s) resultParts[#resultParts + 1] = s end
 			local function writeActions(protoActions)
 				local actions  = protoActions.actions
 				local proto    = protoActions.proto
@@ -686,7 +709,7 @@ local function Decompile(bytecode, options)
 				local jumpMarkers = {}
 				local function makeJump(idx) idx-=1; jumpMarkers[idx]=(jumpMarkers[idx] or 0)+1 end
 				totalParameters += numParams
-				if proto.main and pflags and pflags.native then result ..= "--!native\n" end
+				if proto.main and pflags and pflags.native then emit("--!native\n") end
 				local function fmtReg(r)
 					local pr = r+1
 					if pr < numParams+1 then
@@ -744,13 +767,13 @@ local function Decompile(bytecode, options)
 				local function writeProto(reg, p)
 					local body=fmtProto(p)
 					if p.name then
-						result ..= "\n"..body
+						emit("\n"..body)
 						writeActions(registerActions[p.id])
-						result ..= "end\n"..fmtReg(reg).." = "..p.name
+						emit("end\n"..fmtReg(reg).." = "..p.name)
 					else
-						result ..= fmtReg(reg).." = "..body
+						emit(fmtReg(reg).." = "..body)
 						writeActions(registerActions[p.id])
-						result ..= "end"
+						emit("end")
 					end
 				end
 				for i, action in ipairs(actions) do
@@ -764,61 +787,61 @@ local function Decompile(bytecode, options)
 						local n = jumpMarkers[i]
 						if n then
 							jumpMarkers[i]=nil
-							for _=1,n do result ..= "end\n" end
+						for _=1,n do emit("end\n") end
 						end
 					end
 					if options.ShowOperationIndex then
-						result ..= "["..padLeft(i,"0",3).."] "
+						emit("["..padLeft(i,"0",3).."] ")
 					end
 					if options.ShowInstructionLines and lineInfo and lineInfo[i] then
-						result ..= ":"..padLeft(lineInfo[i],"0",3)..":"
+						emit(":"..padLeft(lineInfo[i],"0",3)..":")
 					end
 					if options.ShowOperationNames then
-						result ..= padRight(opn," ",15)
+						emit(padRight(opn," ",15))
 					end
-					if opn=="LOADNIL" then result ..= fmtReg(ur[1]).." = nil"
+					if opn=="LOADNIL" then emit(fmtReg(ur[1]).." = nil")
 					elseif opn=="LOADB" then
-						result ..= fmtReg(ur[1]).." = "..toEscapedString(toBoolean(ed[1]))
-						if ed[2]~=0 then result ..= " +"..ed[2] end
-					elseif opn=="LOADN" then result ..= fmtReg(ur[1]).." = "..ed[1]
-					elseif opn=="LOADK" then result ..= fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1])
-					elseif opn=="MOVE"  then result ..= fmtReg(ur[1]).." = "..fmtReg(ur[2])
+						emit(fmtReg(ur[1]).." = "..toEscapedString(toBoolean(ed[1])))
+						if ed[2]~=0 then emit(" +"..ed[2]) end
+					elseif opn=="LOADN" then emit(fmtReg(ur[1]).." = "..ed[1])
+					elseif opn=="LOADK" then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="MOVE"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]))
 					elseif opn=="GETGLOBAL" then
 						local gk=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
 						if options.ListUsedGlobals and isValidGlobal(gk) then
-							table.insert(usedGlobals,gk)
+							table.insert(usedGlobals,gk); usedGlobalsSet[gk]=true
 						end
-						result ..= fmtReg(ur[1]).." = "..gk
+						emit(fmtReg(ur[1]).." = "..gk)
 					elseif opn=="SETGLOBAL" then
 						local gk=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
 						if options.ListUsedGlobals and isValidGlobal(gk) then
-							table.insert(usedGlobals,gk)
+							table.insert(usedGlobals,gk); usedGlobalsSet[gk]=true
 						end
-						result ..= gk.." = "..fmtReg(ur[1])
-					elseif opn=="GETUPVAL" then result ..= fmtReg(ur[1]).." = "..fmtUpv(caps[ed[1]])
-					elseif opn=="SETUPVAL" then result ..= fmtUpv(caps[ed[1]]).." = "..fmtReg(ur[1])
-					elseif opn=="CLOSEUPVALS" then result ..= "-- clear captures from back until: "..ur[1]
+						emit(gk.." = "..fmtReg(ur[1]))
+					elseif opn=="GETUPVAL" then emit(fmtReg(ur[1]).." = "..fmtUpv(caps[ed[1]]))
+					elseif opn=="SETUPVAL" then emit(fmtUpv(caps[ed[1]]).." = "..fmtReg(ur[1]))
+					elseif opn=="CLOSEUPVALS" then emit("-- clear captures from back until: "..ur[1])
 					elseif opn=="GETIMPORT" then
 						local imp=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
 						local totalIdx = bit32.rshift(ed[2] or 0, 30)
 						if totalIdx==1 and options.ListUsedGlobals and isValidGlobal(imp) then
-							table.insert(usedGlobals,imp)
+							table.insert(usedGlobals,imp); usedGlobalsSet[imp]=true
 						end
-						result ..= fmtReg(ur[1]).." = "..imp
+						emit(fmtReg(ur[1]).." = "..imp)
 					elseif opn=="GETTABLE" then
-						result ..= fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..fmtReg(ur[3]).."]"
+						emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..fmtReg(ur[3]).."]")
 					elseif opn=="SETTABLE" then
-						result ..= fmtReg(ur[2]).."["..fmtReg(ur[3]).."] = "..fmtReg(ur[1])
+						emit(fmtReg(ur[2]).."["..fmtReg(ur[3]).."] = "..fmtReg(ur[1]))
 					elseif opn=="GETTABLEKS" then
 						local key = consts[ed[2]+1] and consts[ed[2]+1].value
-						result ..= fmtReg(ur[1]).." = "..fmtReg(ur[2])..formatIndexString(key)
+						emit(fmtReg(ur[1]).." = "..fmtReg(ur[2])..formatIndexString(key))
 					elseif opn=="SETTABLEKS" then
 						local key = consts[ed[2]+1] and consts[ed[2]+1].value
-						result ..= fmtReg(ur[2])..formatIndexString(key).." = "..fmtReg(ur[1])
+						emit(fmtReg(ur[2])..formatIndexString(key).." = "..fmtReg(ur[1]))
 					elseif opn=="GETTABLEN" then
-						result ..= fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..(ed[1]+1).."]"
+						emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).."["..(ed[1]+1).."]")
 					elseif opn=="SETTABLEN" then
-						result ..= fmtReg(ur[2]).."["..(ed[1]+1).."] = "..fmtReg(ur[1])
+						emit(fmtReg(ur[2]).."["..(ed[1]+1).."] = "..fmtReg(ur[1]))
 					elseif opn=="NEWCLOSURE" then
 						local p2=inner[ed[1]+1]; if p2 then writeProto(ur[1],p2) end
 					elseif opn=="DUPCLOSURE" then
@@ -828,7 +851,7 @@ local function Decompile(bytecode, options)
 						end
 					elseif opn=="NAMECALL" then
 						local method=tostring(consts[ed[2]+1] and consts[ed[2]+1].value or "")
-						result ..= "-- :"..method
+						emit("-- :"..method)
 					elseif opn=="CALL" then
 						local baseR=ur[1]
 						local nArgs=ed[1]-1; local nRes=ed[2]-1
@@ -859,7 +882,7 @@ local function Decompile(bytecode, options)
 							callBody..=ab
 						end
 						callBody..=")"
-						result..=callBody
+						emit(callBody)
 					elseif opn=="RETURN" then
 						local baseR=ur[1]; local tot=ed[1]-2
 						local rb=""
@@ -871,63 +894,63 @@ local function Decompile(bytecode, options)
 								if k~=tot then rb..=", " end
 							end
 						end
-						result..="return"..rb
-					elseif opn=="JUMP" then result..="-- jump to #"..(i+ed[1])
-					elseif opn=="JUMPBACK" then result..="-- jump back to #"..(i+ed[1]+1)
+						emit("return"..rb)
+					elseif opn=="JUMP" then emit("-- jump to #"..(i+ed[1]))
+					elseif opn=="JUMPBACK" then emit("-- jump back to #"..(i+ed[1]+1))
 					elseif opn=="JUMPIF" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if not "..fmtReg(ur[1]).." then -- goto #"..ei
+						emit("if not "..fmtReg(ur[1]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFNOT" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFEQ" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." == "..fmtReg(ur[2]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." == "..fmtReg(ur[2]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFLE" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." >= "..fmtReg(ur[2]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." >= "..fmtReg(ur[2]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFLT" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." > "..fmtReg(ur[2]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." > "..fmtReg(ur[2]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFNOTEQ" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." ~= "..fmtReg(ur[2]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." ~= "..fmtReg(ur[2]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFNOTLE" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." <= "..fmtReg(ur[2]).." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." <= "..fmtReg(ur[2]).." then -- goto #"..ei)
 					elseif opn=="JUMPIFNOTLT" then
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." < "..fmtReg(ur[2]).." then -- goto #"..ei
-					elseif opn=="ADD"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtReg(ur[3])
-					elseif opn=="SUB"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtReg(ur[3])
-					elseif opn=="MUL"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtReg(ur[3])
-					elseif opn=="DIV"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtReg(ur[3])
-					elseif opn=="MOD"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtReg(ur[3])
-					elseif opn=="POW"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtReg(ur[3])
-					elseif opn=="ADDK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtConst(consts[ed[1]+1])
-					elseif opn=="SUBK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtConst(consts[ed[1]+1])
-					elseif opn=="MULK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtConst(consts[ed[1]+1])
-					elseif opn=="DIVK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtConst(consts[ed[1]+1])
-					elseif opn=="MODK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtConst(consts[ed[1]+1])
-					elseif opn=="POWK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtConst(consts[ed[1]+1])
-					elseif opn=="AND"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtReg(ur[3])
-					elseif opn=="OR"   then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtReg(ur[3])
-					elseif opn=="ANDK" then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtConst(consts[ed[1]+1])
-					elseif opn=="ORK"  then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtConst(consts[ed[1]+1])
+						emit("if "..fmtReg(ur[1]).." < "..fmtReg(ur[2]).." then -- goto #"..ei)
+					elseif opn=="ADD"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtReg(ur[3]))
+					elseif opn=="SUB"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtReg(ur[3]))
+					elseif opn=="MUL"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtReg(ur[3]))
+					elseif opn=="DIV"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtReg(ur[3]))
+					elseif opn=="MOD"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtReg(ur[3]))
+					elseif opn=="POW"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtReg(ur[3]))
+					elseif opn=="ADDK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." + "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="SUBK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." - "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="MULK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." * "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="DIVK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." / "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="MODK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." % "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="POWK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." ^ "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="AND"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtReg(ur[3]))
+					elseif opn=="OR"   then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtReg(ur[3]))
+					elseif opn=="ANDK" then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." and "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="ORK"  then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." or "..fmtConst(consts[ed[1]+1]))
 					elseif opn=="CONCAT" then
 						local tgt=table.remove(ur,1)
 						local cb=""
 						for k,r in ipairs(ur) do
 							cb..=fmtReg(r); if k~=#ur then cb..=" .. " end
 						end
-						result..=fmtReg(tgt).." = "..cb
-					elseif opn=="NOT"    then result..=fmtReg(ur[1]).." = not "..fmtReg(ur[2])
-					elseif opn=="MINUS"  then result..=fmtReg(ur[1]).." = -"..fmtReg(ur[2])
-					elseif opn=="LENGTH" then result..=fmtReg(ur[1]).." = #"..fmtReg(ur[2])
+						emit(fmtReg(tgt).." = "..cb)
+					elseif opn=="NOT"    then emit(fmtReg(ur[1]).." = not "..fmtReg(ur[2]))
+					elseif opn=="MINUS"  then emit(fmtReg(ur[1]).." = -"..fmtReg(ur[2]))
+					elseif opn=="LENGTH" then emit(fmtReg(ur[1]).." = #"..fmtReg(ur[2]))
 					elseif opn=="NEWTABLE" then
-						result..=fmtReg(ur[1]).." = {}"
+						emit(fmtReg(ur[1]).." = {}")
 						if options.ShowDebugInformation and ed[2] and ed[2]>0 then
-							result..=" "
+							emit(" ")
 						end
 					elseif opn=="DUPTABLE" then
 						local cv=consts[ed[1]+1]
@@ -937,34 +960,33 @@ local function Decompile(bytecode, options)
 								tb..=fmtConst(consts[cv.value.keys[k]])
 								if k~=cv.value.size then tb..=", " end
 							end
-							result..=fmtReg(ur[1]).." = {} -- "..tb.."}"
-						else result..=fmtReg(ur[1]).." = {}" end
+							emit(fmtReg(ur[1]).." = {} -- "..tb.."}")
+						else emit(fmtReg(ur[1]).." = {}") end
 					elseif opn=="SETLIST" then
 						local tgt=ur[1]; local src=ur[2]
 						local si=ed[1]; local vc=ed[2]
 						if vc==0 then
-							result..=fmtReg(tgt).."["..si.."] = [...]"
+							emit(fmtReg(tgt).."["..si.."] = [...]")
 						else
 							local tot2=#ur-1; local cb=""
 							for k=1,tot2 do
 								cb..=fmtReg(ur[k]).."["..(si+k-1).."] = "..fmtReg(src+k-1)
 								if k~=tot2 then cb..="\n" end
 							end
-							result..=cb
+							emit(cb)
 						end
 					elseif opn=="FORNPREP" then
-						result..="for "..fmtReg(ur[3]).." = "..fmtReg(ur[3])..", "
-							..fmtReg(ur[1])..", "..fmtReg(ur[2]).." do -- end at #"..(i+ed[1])
+						emit("for "..fmtReg(ur[3]).." = "..fmtReg(ur[3])..", "..fmtReg(ur[1])..", "..fmtReg(ur[2]).." do -- end at #"..(i+ed[1]))
 					elseif opn=="FORNLOOP" then
-						result..="end -- iterate + jump to #"..(i+ed[1])
+						emit("end -- iterate + jump to #"..(i+ed[1]))
 					elseif opn=="FORGLOOP" then
-						result..="end -- iterate + jump to #"..(i+ed[1])
+						emit("end -- iterate + jump to #"..(i+ed[1]))
 					elseif opn=="FORGPREP_INEXT" then
 						local tr=ur[1]+1
-						result..="for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in ipairs("..fmtReg(tr)..") do"
+						emit("for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in ipairs("..fmtReg(tr)..") do")
 					elseif opn=="FORGPREP_NEXT" then
 						local tr=ur[1]+1
-						result..="for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in pairs("..fmtReg(tr)..") do"
+						emit("for "..fmtReg(tr+2)..", "..fmtReg(tr+3).." in pairs("..fmtReg(tr)..") do")
 					elseif opn=="FORGPREP" then
 						local ei=i+ed[1]+2
 						local ea=actions[ei]
@@ -974,7 +996,7 @@ local function Decompile(bytecode, options)
 								vb..=fmtReg(r); if k~=#ea.usedRegisters then vb..=", " end
 							end
 						end
-						result..="for "..vb.." in "..fmtReg(ur[1]).." do -- end at #"..ei
+						emit("for "..vb.." in "..fmtReg(ur[1]).." do -- end at #"..ei)
 					elseif opn=="GETVARARGS" then
 						local vc2=ed[1]-1
 						local rb=""
@@ -984,48 +1006,48 @@ local function Decompile(bytecode, options)
 								rb..=fmtReg(ur[k]); if k~=vc2 then rb..=", " end
 							end
 						end
-						result..=rb.." = ..."
-					elseif opn=="PREPVARARGS" then result..="-- ... ; number of fixed args: "..ed[1]
-					elseif opn=="LOADKX" then result..=fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1])
-					elseif opn=="JUMPX"    then result..="-- jump to #"..(i+ed[1])
-					elseif opn=="COVERAGE" then result..="-- coverage ("..ed[1]..")"
+						emit(rb.." = ...")
+					elseif opn=="PREPVARARGS" then emit("-- ... ; number of fixed args: "..ed[1])
+					elseif opn=="LOADKX" then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="JUMPX"    then emit("-- jump to #"..(i+ed[1]))
+					elseif opn=="COVERAGE" then emit("-- coverage ("..ed[1]..")")
 					elseif opn=="JUMPXEQKNIL" then
 						local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 						local sign=rev and "~=" or "=="
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." "..sign.." nil then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." "..sign.." nil then -- goto #"..ei)
 					elseif opn=="JUMPXEQKB" then
 						local val=tostring(toBoolean(bit32.band(ed[2] or 0,1)))
 						local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 						local sign=rev and "~=" or "=="
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei
+						emit("if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
 					elseif opn=="JUMPXEQKN" or opn=="JUMPXEQKS" then
 						local cidx=bit32.band(ed[2] or 0,0xFFFFFF)
 						local val=fmtConst(consts[cidx+1])
 						local rev=bit32.rshift(ed[2] or 0,0x1F)~=1
 						local sign=rev and "~=" or "=="
 						local ei=i+ed[1]; makeJump(ei)
-						result..="if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei
-					elseif opn=="CAPTURE"  then result..="-- upvalue capture"
-					elseif opn=="SUBRK"    then result..=fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." - "..fmtReg(ur[2])
-					elseif opn=="DIVRK"    then result..=fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." / "..fmtReg(ur[2])
-					elseif opn=="IDIV"     then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtReg(ur[3])
-					elseif opn=="IDIVK"    then result..=fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtConst(consts[ed[1]+1])
-					elseif opn=="FASTCALL" then result..="-- FASTCALL; "..Luau:GetBuiltinInfo(ed[1]).."()"
-					elseif opn=="FASTCALL1" then result..="-- FASTCALL1; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..")"
-					elseif opn=="FASTCALL2" then result..="-- FASTCALL2; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..")"
+						emit("if "..fmtReg(ur[1]).." "..sign.." "..val.." then -- goto #"..ei)
+					elseif opn=="CAPTURE"  then emit("-- upvalue capture")
+					elseif opn=="SUBRK"    then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." - "..fmtReg(ur[2]))
+					elseif opn=="DIVRK"    then emit(fmtReg(ur[1]).." = "..fmtConst(consts[ed[1]+1]).." / "..fmtReg(ur[2]))
+					elseif opn=="IDIV"     then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtReg(ur[3]))
+					elseif opn=="IDIVK"    then emit(fmtReg(ur[1]).." = "..fmtReg(ur[2]).." // "..fmtConst(consts[ed[1]+1]))
+					elseif opn=="FASTCALL" then emit("-- FASTCALL; "..Luau:GetBuiltinInfo(ed[1]).."()")
+					elseif opn=="FASTCALL1" then emit("-- FASTCALL1; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..")")
+					elseif opn=="FASTCALL2" then emit("-- FASTCALL2; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..")")
 					elseif opn=="FASTCALL2K" then
-						result..="-- FASTCALL2K; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtConst(consts[(ed[3] or 0)+1])..")"
+						emit("-- FASTCALL2K; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtConst(consts[(ed[3] or 0)+1])..")")
 					elseif opn=="FASTCALL3" then
-						result..="-- FASTCALL3; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..", "..fmtReg(ur[3])..")"
+						emit("-- FASTCALL3; "..Luau:GetBuiltinInfo(ed[1]).."("..fmtReg(ur[1])..", "..fmtReg(ur[2])..", "..fmtReg(ur[3])..")")
 					end
-					result..="\n"
+					emit("\n")
 					handleJumps()
 				end
 			end
 			writeActions(registerActions[mainProtoId])
-			finalResult = processResult(result)
+			finalResult = processResult(table.concat(resultParts))
 		else
 			finalResult = processResult("-- one day..")
 		end
@@ -1035,16 +1057,12 @@ local function Decompile(bytecode, options)
 		if proceed then
 			local startTime = os.clock()
 			local result
-			task.spawn(function()
-				result = finalize(organize())
-			end)
-			while not result and (os.clock()-startTime) < options.DecompilerTimeout do
-				task.wait()
+			local ok, res = pcall(function() return finalize(organize()) end)
+			result = ok and res or ("-- RUNTIME ERROR:\n-- " .. tostring(res))
+			if (os.clock() - startTime) >= options.DecompilerTimeout then
+				return Strings.TIMEOUT
 			end
-			if result then
-				return string.format(Strings.SUCCESS, result)
-			end
-			return Strings.TIMEOUT
+			return string.format(Strings.SUCCESS, result)
 		else
 			if issue == "COMPILATION_FAILURE" then
 				local len = reader:len()-1
@@ -1252,7 +1270,7 @@ titleBar.BackgroundTransparency = 1; titleBar.BorderSizePixel = 0
 local titleLbl = Instance.new("TextLabel", titleBar)
 titleLbl.Size = UDim2.new(1, -42, 1, 0); titleLbl.Position = UDim2.new(0, 5, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = "poor mans decompiler"
+titleLbl.Text = " "
 titleLbl.Font = Enum.Font.SourceSans; titleLbl.TextSize = 14
 titleLbl.TextColor3 = COL_WHITE
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -1295,21 +1313,33 @@ local toolSep = Instance.new("Frame", content)
 toolSep.Size = UDim2.new(1, 0, 0, 1); toolSep.Position = UDim2.new(0, 0, 0, TOOL_H)
 toolSep.BackgroundColor3 = COL_SEP; toolSep.BorderSizePixel = 0
 local scanBtn = makeFlatBtn(content, "Scan",
-	UDim2.new(0, 55, 0, TOOL_H), UDim2.new(0, 0, 0, 0))
+	UDim2.new(0, 50, 0, TOOL_H), UDim2.new(0, 0, 0, 0))
+local rescanBtn = makeFlatBtn(content, "Rescan",
+	UDim2.new(0, 50, 0, TOOL_H), UDim2.new(0, 52, 0, 0))
 local clearListBtn = makeFlatBtn(content, "Clear",
-	UDim2.new(0, 45, 0, TOOL_H), UDim2.new(0, 56, 0, 0))
+	UDim2.new(0, 40, 0, TOOL_H), UDim2.new(0, 104, 0, 0))
+local sortNameBtn = makeFlatBtn(content, "A-Z",
+	UDim2.new(0, 32, 0, TOOL_H), UDim2.new(0, 150, 0, 0))
+local sortPathBtn = makeFlatBtn(content, "Path",
+	UDim2.new(0, 32, 0, TOOL_H), UDim2.new(0, 184, 0, 0))
+local sortSizeBtn = makeFlatBtn(content, "Size",
+	UDim2.new(0, 32, 0, TOOL_H), UDim2.new(0, 218, 0, 0))
 local toolMidSep = Instance.new("Frame", content)
 toolMidSep.Size = UDim2.new(0, 1, 0, TOOL_H); toolMidSep.Position = UDim2.new(0, LEFT_W, 0, 0)
 toolMidSep.BackgroundColor3 = COL_SEP; toolMidSep.BorderSizePixel = 0
-local inspectBtn = makeFlatBtn(content, "Inspect",
+local inspectBtn = makeFlatBtn(content, "View",
 	UDim2.new(0, 65, 0, TOOL_H), UDim2.new(0, LEFT_W + 2, 0, 0))
-local disasmBtn = makeFlatBtn(content, "Disassemble",
+local disasmBtn = makeFlatBtn(content, "Decompile",
 	UDim2.new(0, 82, 0, TOOL_H), UDim2.new(0, LEFT_W + 69, 0, 0))
 local copyBtn = makeFlatBtn(content, "Copy Output",
 	UDim2.new(0, 72, 0, TOOL_H), UDim2.new(0, LEFT_W + 153, 0, 0))
+local saveBtn = makeFlatBtn(content, "Save File",
+	UDim2.new(0, 60, 0, TOOL_H), UDim2.new(0, LEFT_W + 227, 0, 0))
+local optBtn = makeFlatBtn(content, "Options",
+	UDim2.new(0, 55, 0, TOOL_H), UDim2.new(0, LEFT_W + 289, 0, 0))
 local selectedLbl = Instance.new("TextLabel", content)
-selectedLbl.Size = UDim2.new(1, -(LEFT_W + 234), 0, TOOL_H)
-selectedLbl.Position = UDim2.new(0, LEFT_W + 228, 0, 0)
+selectedLbl.Size = UDim2.new(1, -(LEFT_W + 360), 0, TOOL_H)
+selectedLbl.Position = UDim2.new(0, LEFT_W + 354, 0, 0)
 selectedLbl.BackgroundTransparency = 1
 selectedLbl.Text = "Select a module →"
 selectedLbl.Font = Enum.Font.SourceSans; selectedLbl.TextSize = 8
@@ -1319,6 +1349,7 @@ selectedLbl.TextYAlignment = Enum.TextYAlignment.Center
 selectedLbl.TextTruncate = Enum.TextTruncate.AtEnd
 local BODY_Y  = TOOL_H + 1
 local BODY_H  = -(TOOL_H + 1 + STATUS_H)
+local rightPanel
 local leftPanel = Instance.new("Frame", content)
 leftPanel.Size = UDim2.new(0, LEFT_W, 1, BODY_H)
 leftPanel.Position = UDim2.new(0, 0, 0, BODY_Y)
@@ -1326,12 +1357,65 @@ leftPanel.BackgroundColor3 = COL_EDITOR; leftPanel.BorderSizePixel = 0
 local vSep = Instance.new("Frame", content)
 vSep.Size = UDim2.new(0, 1, 1, BODY_H)
 vSep.Position = UDim2.new(0, LEFT_W, 0, BODY_Y)
-vSep.BackgroundColor3 = COL_SEP; vSep.BorderSizePixel = 0
+vSep.BackgroundColor3 = COL_SEP; vSep.BorderSizePixel = 0; vSep.ZIndex = 3
+local dragHandle = Instance.new("TextButton", content)
+dragHandle.Size = UDim2.new(0, 8, 1, BODY_H)
+dragHandle.Position = UDim2.new(0, LEFT_W - 3, 0, BODY_Y)
+dragHandle.BackgroundTransparency = 1; dragHandle.Text = ""
+dragHandle.BorderSizePixel = 0; dragHandle.AutoButtonColor = false
+dragHandle.ZIndex = 4
+dragHandle.MouseEnter:Connect(function()
+	vSep.BackgroundColor3 = Color3.fromRGB(100, 130, 200)
+end)
+dragHandle.MouseLeave:Connect(function()
+	vSep.BackgroundColor3 = COL_SEP
+end)
+local MIN_LEFT = 150
+local MAX_LEFT = 500
+local function setLeftWidth(w)
+	w = math.clamp(w, MIN_LEFT, MAX_LEFT)
+	LEFT_W = w
+	leftPanel.Size     = UDim2.new(0, w, 1, BODY_H)
+	vSep.Position      = UDim2.new(0, w, 0, BODY_Y)
+	dragHandle.Position= UDim2.new(0, w - 3, 0, BODY_Y)
+	rightPanel.Size    = UDim2.new(1, -(w + 1), 1, BODY_H)
+	rightPanel.Position= UDim2.new(0, w + 1, 0, BODY_Y)
+	toolMidSep.Position     = UDim2.new(0, w, 0, 0)
+	inspectBtn.Position     = UDim2.new(0, w + 2,   0, 0)
+	disasmBtn.Position      = UDim2.new(0, w + 69,  0, 0)
+	copyBtn.Position        = UDim2.new(0, w + 153, 0, 0)
+	saveBtn.Position        = UDim2.new(0, w + 227, 0, 0)
+	optBtn.Position         = UDim2.new(0, w + 289, 0, 0)
+	selectedLbl.Size        = UDim2.new(1, -(w + 360), 0, TOOL_H)
+	selectedLbl.Position    = UDim2.new(0, w + 354,  0, 0)
+	optPanel.Position       = UDim2.new(0, w + 289, 0, TOOL_H + 1)
+end
+local dragging = false
+local dragStartX, dragStartW = 0, 0
+dragHandle.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging   = true
+		dragStartX = input.Position.X
+		dragStartW = LEFT_W
+	end
+end)
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local delta = input.Position.X - dragStartX
+		setLeftWidth(dragStartW + delta)
+	end
+end)
+game:GetService("UserInputService").InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		dragging = false
+		vSep.BackgroundColor3 = COL_SEP
+	end
+end)
 local searchBox = Instance.new("TextBox", leftPanel)
 searchBox.Size = UDim2.new(1, 0, 0, 18); searchBox.Position = UDim2.new(0, 0, 0, 0)
 searchBox.BackgroundColor3 = COL_BTN; searchBox.BorderSizePixel = 0
 searchBox.PlaceholderText = "Filter modules..."; searchBox.Text = ""
-searchBox.Font = Enum.Font.SourceSans; searchBox.TextSize = 8
+searchBox.Font = Enum.Font.SourceSans; searchBox.TextSize = 12
 searchBox.TextColor3 = COL_WHITE; searchBox.ClearTextOnFocus = false
 searchBox.PlaceholderColor3 = COL_DIM
 local searchSep = Instance.new("Frame", leftPanel)
@@ -1340,7 +1424,7 @@ searchSep.BackgroundColor3 = COL_SEP; searchSep.BorderSizePixel = 0
 local countLbl = Instance.new("TextLabel", leftPanel)
 countLbl.Size = UDim2.new(1, -4, 0, 14); countLbl.Position = UDim2.new(0, 4, 0, 20)
 countLbl.BackgroundTransparency = 1; countLbl.Text = "No scan yet."
-countLbl.Font = Enum.Font.SourceSans; countLbl.TextSize = 8
+countLbl.Font = Enum.Font.SourceSans; countLbl.TextSize = 11
 countLbl.TextColor3 = COL_DIM; countLbl.TextXAlignment = Enum.TextXAlignment.Left
 local listScroll = Instance.new("ScrollingFrame", leftPanel)
 listScroll.Size = UDim2.new(1, 0, 1, -34); listScroll.Position = UDim2.new(0, 0, 0, 34)
@@ -1409,6 +1493,18 @@ local function hlTokenize(line)
 		local c = line:sub(i,i)
 		if c == "-" and line:sub(i,i+1) == "--" then
 			table.insert(tokens, {line:sub(i), "Comment"}); break
+		elseif c == "[" and line:sub(i,i+1):match("%[=*%[") then
+			local eqCount = 0
+			local k = i+1
+			while line:sub(k,k) == "=" do eqCount += 1; k += 1 end
+			if line:sub(k,k) == "[" then
+				local close = "]"..string.rep("=",eqCount).."]"
+				local endIdx = line:find(close, k+1, true)
+				local j = endIdx and (endIdx + #close - 1) or #line
+				table.insert(tokens, {line:sub(i,j), "String"}); i = j
+			else
+				table.insert(tokens, {c, "Operator"})
+			end
 		elseif c == '"' or c == "'" then
 			local q, j = c, i+1
 			while j <= #line do
@@ -1460,7 +1556,7 @@ local HL_GUTTER  = 46
 local HL_FONT    = Enum.Font.Code
 local HL_TS      = 13
 local _outputRaw = ""
-local rightPanel = Instance.new("Frame", content)
+rightPanel = Instance.new("Frame", content)
 rightPanel.Size = UDim2.new(1, -(LEFT_W + 1), 1, BODY_H)
 rightPanel.Position = UDim2.new(0, LEFT_W + 1, 0, BODY_Y)
 rightPanel.BackgroundColor3 = COL_EDITOR; rightPanel.BorderSizePixel = 0
@@ -1497,43 +1593,56 @@ codeFrame.Position = UDim2.new(0, HL_GUTTER + 2, 0, 0)
 codeFrame.Size = UDim2.new(1, -(HL_GUTTER + 2), 0, 0)
 codeFrame.BackgroundTransparency = 1
 codeFrame.BorderSizePixel = 0
+local RENDER_BATCH = 80
 local function renderOutput(text)
-	for _, c in ipairs(gutterFrame:GetChildren()) do
-		if c:IsA("TextLabel") then c:Destroy() end
+	for _, child in ipairs(gutterFrame:GetChildren()) do
+		if child:IsA("TextLabel") then child:Destroy() end
 	end
-	for _, c in ipairs(codeFrame:GetChildren()) do c:Destroy() end
+	for _, child in ipairs(codeFrame:GetChildren()) do child:Destroy() end
 	local linesTbl = text:split("\n")
 	if linesTbl[#linesTbl] == "" then table.remove(linesTbl) end
+	local totalLines = #linesTbl
+	local charW     = math.floor(HL_TS * 0.6)
 	local longestPx = 0
-	local charW = math.floor(HL_TS * 0.6)
-	for i, line in ipairs(linesTbl) do
-		local yOff = (i - 1) * HL_LINE_H
-		local numLbl = Instance.new("TextLabel", gutterFrame)
-		numLbl.Size = UDim2.new(1, -4, 0, HL_LINE_H)
-		numLbl.Position = UDim2.new(0, 0, 0, yOff)
-		numLbl.BackgroundTransparency = 1
-		numLbl.Text = tostring(i)
-		numLbl.Font = HL_FONT; numLbl.TextSize = HL_TS
-		numLbl.TextColor3 = Color3.fromRGB(90, 90, 90)
-		numLbl.TextXAlignment = Enum.TextXAlignment.Right
-		numLbl.TextYAlignment = Enum.TextYAlignment.Top
-		numLbl.ZIndex = 2
-		local codeLbl = Instance.new("TextLabel", codeFrame)
-		codeLbl.Size = UDim2.new(0, math.max(400, #line * charW + 20), 0, HL_LINE_H)
-		codeLbl.Position = UDim2.new(0, 4, 0, yOff)
-		codeLbl.BackgroundTransparency = 1
-		codeLbl.RichText = true; codeLbl.TextWrapped = false
-		codeLbl.Font = HL_FONT; codeLbl.TextSize = HL_TS
-		codeLbl.TextColor3 = COL_TEXT
-		codeLbl.TextXAlignment = Enum.TextXAlignment.Left
-		codeLbl.TextYAlignment = Enum.TextYAlignment.Top
-		codeLbl.Text = hlLine(line)
-		if #line * charW > longestPx then longestPx = #line * charW end
-	end
-	local totalH = #linesTbl * HL_LINE_H + 8
-	codeFrame.Size = UDim2.new(0, longestPx + 60, 0, totalH)
+	local totalH    = totalLines * HL_LINE_H + 8
+	codeFrame.Size   = UDim2.new(0, 400, 0, totalH)
 	gutterFrame.Size = UDim2.new(0, HL_GUTTER, 0, totalH)
-	outputScroll.CanvasSize = UDim2.new(0, HL_GUTTER + longestPx + 80, 0, totalH)
+	outputScroll.CanvasSize = UDim2.new(0, 400 + HL_GUTTER + 80, 0, totalH)
+	local function renderBatch(startIdx)
+		local endIdx = math.min(startIdx + RENDER_BATCH - 1, totalLines)
+		for i = startIdx, endIdx do
+			local line = linesTbl[i]
+			local yOff = (i - 1) * HL_LINE_H
+			local numLbl = Instance.new("TextLabel", gutterFrame)
+			numLbl.Size = UDim2.new(1, -4, 0, HL_LINE_H)
+			numLbl.Position = UDim2.new(0, 0, 0, yOff)
+			numLbl.BackgroundTransparency = 1
+			numLbl.Text = tostring(i)
+			numLbl.Font = HL_FONT; numLbl.TextSize = HL_TS
+			numLbl.TextColor3 = Color3.fromRGB(90, 90, 90)
+			numLbl.TextXAlignment = Enum.TextXAlignment.Right
+			numLbl.TextYAlignment = Enum.TextYAlignment.Top
+			numLbl.ZIndex = 2
+			local codeLbl = Instance.new("TextLabel", codeFrame)
+			codeLbl.Size = UDim2.new(0, math.max(400, #line * charW + 20), 0, HL_LINE_H)
+			codeLbl.Position = UDim2.new(0, 4, 0, yOff)
+			codeLbl.BackgroundTransparency = 1
+			codeLbl.RichText = true; codeLbl.TextWrapped = false
+			codeLbl.Font = HL_FONT; codeLbl.TextSize = HL_TS
+			codeLbl.TextColor3 = COL_TEXT
+			codeLbl.TextXAlignment = Enum.TextXAlignment.Left
+			codeLbl.TextYAlignment = Enum.TextYAlignment.Top
+			codeLbl.Text = hlLine(line)
+			if #line * charW > longestPx then longestPx = #line * charW end
+		end
+		if endIdx < totalLines then
+			task.defer(function() renderBatch(endIdx + 1) end)
+		else
+			codeFrame.Size   = UDim2.new(0, longestPx + 60, 0, totalH)
+			outputScroll.CanvasSize = UDim2.new(0, HL_GUTTER + longestPx + 80, 0, totalH)
+		end
+	end
+	renderBatch(1)
 end
 local statusBar = Instance.new("Frame", content)
 statusBar.Size = UDim2.new(1, 0, 0, STATUS_H)
@@ -1549,116 +1658,383 @@ statusLbl.Font = Enum.Font.SourceSans; statusLbl.TextSize = 8
 statusLbl.TextColor3 = COL_GREEN
 statusLbl.TextXAlignment = Enum.TextXAlignment.Left
 statusLbl.TextYAlignment = Enum.TextYAlignment.Center
-local ModuleList     = {}
-local selectedModule = nil
-local allButtons     = {}
-local function setStatus(msg, color)
-	statusLbl.Text = msg
-	statusLbl.TextColor3 = color or COL_GREEN
+local OPT = {
+	ShowDebugInfo   = true,
+	ShowTrivialOps  = false,
+	ShowInstLines   = true,
+	ShowOpIndex     = true,
+	ShowOpNames     = true,
+	ListUsedGlobals = true,
+	UseTypeInfo     = true,
+}
+local optPanel = Instance.new("Frame", content)
+optPanel.Size = UDim2.new(0, 200, 0, 172)
+optPanel.Position = UDim2.new(0, LEFT_W + 289, 0, TOOL_H + 1)
+optPanel.BackgroundColor3 = COL_BTN; optPanel.BorderSizePixel = 0
+optPanel.ZIndex = 10; optPanel.Visible = false
+local optPanelTop = Instance.new("Frame", optPanel)
+optPanelTop.Size = UDim2.new(1, 0, 0, 1)
+optPanelTop.BackgroundColor3 = COL_SEP; optPanelTop.BorderSizePixel = 0
+local function makeCheckbox(parent, label, key, yOff)
+	local row = Instance.new("TextButton", parent)
+	row.Size = UDim2.new(1, 0, 0, 20); row.Position = UDim2.new(0, 0, 0, yOff)
+	row.BackgroundTransparency = 1; row.Text = ""; row.AutoButtonColor = false; row.ZIndex = 11
+	local box = Instance.new("TextLabel", row)
+	box.Size = UDim2.new(0, 12, 0, 12); box.Position = UDim2.new(0, 6, 0.5, -6)
+	box.BackgroundColor3 = COL_EDITOR; box.BorderSizePixel = 0
+	box.Text = OPT[key] and "x" or ""; box.Font = Enum.Font.SourceSansBold
+	box.TextSize = 8; box.TextColor3 = COL_WHITE; box.ZIndex = 12
+	local lbl = Instance.new("TextLabel", row)
+	lbl.Size = UDim2.new(1, -22, 1, 0); lbl.Position = UDim2.new(0, 22, 0, 0)
+	lbl.BackgroundTransparency = 1; lbl.Text = label
+	lbl.Font = Enum.Font.SourceSans; lbl.TextSize = 8
+	lbl.TextColor3 = COL_TEXT; lbl.TextXAlignment = Enum.TextXAlignment.Left; lbl.ZIndex = 12
+	row.MouseButton1Click:Connect(function()
+		OPT[key] = not OPT[key]; box.Text = OPT[key] and "x" or ""
+	end)
+	row.MouseEnter:Connect(function() row.BackgroundTransparency = 0; row.BackgroundColor3 = COL_BTN_HOV end)
+	row.MouseLeave:Connect(function() row.BackgroundTransparency = 1 end)
+end
+makeCheckbox(optPanel, "Debug info",        "ShowDebugInfo",   2)
+makeCheckbox(optPanel, "Trivial ops",       "ShowTrivialOps",  22)
+makeCheckbox(optPanel, "Instruction lines", "ShowInstLines",   42)
+makeCheckbox(optPanel, "Op index",          "ShowOpIndex",     62)
+makeCheckbox(optPanel, "Op names",          "ShowOpNames",     82)
+makeCheckbox(optPanel, "List globals",      "ListUsedGlobals", 102)
+makeCheckbox(optPanel, "Type info",         "UseTypeInfo",     122)
+local optClose = makeFlatBtn(optPanel, "Close", UDim2.new(1, 0, 0, 18), UDim2.new(0, 0, 0, 152))
+optClose.MouseButton1Click:Connect(function() optPanel.Visible = false end)
+optBtn.MouseButton1Click:Connect(function() optPanel.Visible = not optPanel.Visible end)
+local PP_INDENT = "    "
+local function prettyPrint(text)
+	local result = {}
+	local depth  = 0
+	local DEDENT_BEFORE      = { ["end"]=true, ["until"]=true }
+	local INDENT_AFTER       = { ["then"]=true, ["do"]=true, ["repeat"]=true }
+	local DEDENT_THEN_INDENT = { ["else"]=true, ["elseif"]=true }
+	local function stripStrings(s)
+		s = s:gsub('"[^"\\]*(?:\\.[^"\\]*)*"', '""')
+		s = s:gsub("'[^'\\]*(?:\\.[^'\\]*)*'", "''")
+		s = s:gsub("%-%-.*$", "")
+		return s
+	end
+	local function firstWord(s)
+		return (stripStrings(s):match("^%s*([%a_][%w_]*)")) or ""
+	end
+	local function containsOpener(s)
+		local clean = stripStrings(s)
+		for w in clean:gmatch("[%a_][%w_]*") do
+			if INDENT_AFTER[w] then return true end
+			if w == "function" then return true end
+		end
+		return false
+	end
+	for line in (text .. "\n"):gmatch("[^\n]*\n") do
+		local bare = line:gsub("\n$", "")
+		if bare == "" then
+			result[#result + 1] = "\n"; continue
+		end
+		local expr = bare:match("^%[%d+%]%s*:?%d*:?%s*%u[%u_]*%s+(.*)") or bare
+		local kw = firstWord(expr)
+		if DEDENT_THEN_INDENT[kw] then
+			depth = math.max(0, depth - 1)
+			result[#result + 1] = string.rep(PP_INDENT, depth) .. bare .. "\n"
+			depth += 1
+		elseif DEDENT_BEFORE[kw] then
+			depth = math.max(0, depth - 1)
+			result[#result + 1] = string.rep(PP_INDENT, depth) .. bare .. "\n"
+		else
+			result[#result + 1] = string.rep(PP_INDENT, depth) .. bare .. "\n"
+			if containsOpener(expr) then depth += 1 end
+		end
+	end
+	return table.concat(result)
 end
 local function setOutput(text)
 	_outputRaw = text or ""
 	if _outputRaw == "" then
-		outputScroll.Visible = false
-		outputPlaceholder.Visible = true
+		outputScroll.Visible = false; outputPlaceholder.Visible = true
 	else
-		outputPlaceholder.Visible = false
-		outputScroll.Visible = true
+		outputPlaceholder.Visible = false; outputScroll.Visible = true
 		outputScroll.CanvasPosition = Vector2.zero
-		renderOutput(_outputRaw)
+		renderOutput(prettyPrint(_outputRaw))
 	end
 end
+local BADGE_OK  = Color3.fromRGB( 80, 200,  80)
+local BADGE_BAD = Color3.fromRGB(200,  80,  80)
+local function runDisasm(obj)
+	local ok, bytes = pcall(getscriptbytecode, obj)
+	if not ok or not bytes or bytes == "" then
+		setStatus("getscriptbytecode() failed -- protected or unloaded.", COL_RED)
+		setOutput("-- Could not read bytecode for:\n-- " .. obj:GetFullName()
+			.. "\n--\n-- Script may be:\n--   Protected (MoonSec, Luraph, etc)\n"
+			.. "--   Not yet loaded\n--   Server-side only\n")
+		return
+	end
+	local opts = table.clone(DEFAULT_OPTIONS)
+	opts.DecompilerMode        = "disasm"
+	opts.ShowDebugInformation  = OPT.ShowDebugInfo
+	opts.ShowTrivialOperations = OPT.ShowTrivialOps
+	opts.ShowInstructionLines  = OPT.ShowInstLines
+	opts.ShowOperationIndex    = OPT.ShowOpIndex
+	opts.ShowOperationNames    = OPT.ShowOpNames
+	opts.ListUsedGlobals       = OPT.ListUsedGlobals
+	opts.UseTypeInfo           = OPT.UseTypeInfo
+	local ok2, result = pcall(Decompile, bytes, opts)
+	if not ok2 then
+		setStatus("Decompiler error: " .. tostring(result), COL_RED)
+		setOutput("-- Decompiler threw:\n-- " .. tostring(result)); return
+	end
+	setOutput(result or "-- (empty output)")
+	setStatus(string.format("Disassembly done -- %d bytes.", #bytes))
+end
+local ModuleData  = {}
+local ModuleSet   = {}
+local allButtons  = {}
+local selectedModule = nil
+local GroupCollapsed = {}
+local SORT_MODE = "name"
+local function setStatus(msg, color)
+	statusLbl.Text = msg; statusLbl.TextColor3 = color or COL_GREEN
+end
+local function getGroup(obj)
+	local path = obj:GetFullName()
+	return path:match("^([^%.]+)") or "Unknown"
+end
+local SORT_FNS = {
+	name = function(a, b)
+		if a.group ~= b.group then return a.group < b.group end
+		return a.name:lower() < b.name:lower()
+	end,
+	path = function(a, b)
+		if a.group ~= b.group then return a.group < b.group end
+		return a.path < b.path
+	end,
+	size = function(a, b)
+		if a.group ~= b.group then return a.group < b.group end
+		return (a.byteSize or 0) > (b.byteSize or 0)
+	end,
+}
+local COL_SORT_ACT = Color3.fromRGB(60, 80, 120)
+local sortBtns = { name=sortNameBtn, path=sortPathBtn, size=sortSizeBtn }
+local function refreshSortHighlight()
+	for k, b in pairs(sortBtns) do
+		b.BackgroundColor3 = (k == SORT_MODE) and COL_SORT_ACT or COL_BTN
+	end
+end
+refreshSortHighlight()
+local function rebuildList()
+	allButtons = {}
+	for _, child in ipairs(listScroll:GetChildren()) do
+		if not child:IsA("UIListLayout") then child:Destroy() end
+	end
+	if #ModuleData == 0 then return end
+	local sorted = table.clone(ModuleData)
+	table.sort(sorted, SORT_FNS[SORT_MODE] or SORT_FNS.name)
+	local seenGroups, groupOrder = {}, {}
+	for _, d in ipairs(sorted) do
+		if not seenGroups[d.group] then
+			seenGroups[d.group] = true
+			table.insert(groupOrder, d.group)
+		end
+	end
+	local buckets = {}
+	for _, d in ipairs(sorted) do
+		if not buckets[d.group] then buckets[d.group] = {} end
+		table.insert(buckets[d.group], d)
+	end
+	for _, grp in ipairs(groupOrder) do
+		local items = buckets[grp]
+		local collapsed = GroupCollapsed[grp] == true
+		local hdr = Instance.new("TextButton", listScroll)
+		hdr.Size = UDim2.new(1, 0, 0, 22)
+		hdr.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+		hdr.BorderSizePixel = 0; hdr.Text = ""; hdr.AutoButtonColor = false
+		hdr.ZIndex = 2
+		local hdrSep = Instance.new("Frame", hdr)
+		hdrSep.Size = UDim2.new(1, 0, 0, 1); hdrSep.Position = UDim2.new(0, 0, 1, -1)
+		hdrSep.BackgroundColor3 = COL_SEP; hdrSep.BorderSizePixel = 0; hdrSep.ZIndex = 2
+		local arrow = Instance.new("TextLabel", hdr)
+		arrow.Size = UDim2.new(0, 14, 1, 0); arrow.Position = UDim2.new(0, 4, 0, 0)
+		arrow.BackgroundTransparency = 1
+		arrow.Text = collapsed and "▶" or "▼"
+		arrow.Font = Enum.Font.SourceSansBold; arrow.TextSize = 9
+		arrow.TextColor3 = Color3.fromRGB(120, 140, 180)
+		arrow.TextXAlignment = Enum.TextXAlignment.Center; arrow.ZIndex = 2
+		local hdrLbl = Instance.new("TextLabel", hdr)
+		hdrLbl.Size = UDim2.new(1, -50, 1, 0); hdrLbl.Position = UDim2.new(0, 20, 0, 0)
+		hdrLbl.BackgroundTransparency = 1
+		hdrLbl.Text = grp .. "  (" .. #items .. ")"
+		hdrLbl.Font = Enum.Font.SourceSansBold; hdrLbl.TextSize = 11
+		hdrLbl.TextColor3 = Color3.fromRGB(160, 175, 210)
+		hdrLbl.TextXAlignment = Enum.TextXAlignment.Left; hdrLbl.ZIndex = 2
+		local rowFrames = {}
+		for _, d in ipairs(items) do
+			local btn = Instance.new("TextButton", listScroll)
+			btn.Size = UDim2.new(1, 0, 0, 38)
+			btn.BackgroundColor3 = COL_EDITOR
+			btn.BorderSizePixel = 0; btn.Text = ""; btn.AutoButtonColor = false
+			btn.Visible = not collapsed
+			local dot = Instance.new("Frame", btn)
+			dot.Size = UDim2.new(0, 6, 0, 6); dot.Position = UDim2.new(1, -11, 0, 6)
+			dot.BackgroundColor3 = d.badge or BADGE_BAD; dot.BorderSizePixel = 0
+			Instance.new("UICorner", dot).CornerRadius = UDim.new(0, 3)
+			local rowSep = Instance.new("Frame", btn)
+			rowSep.Size = UDim2.new(1, 0, 0, 1); rowSep.Position = UDim2.new(0, 0, 1, -1)
+			rowSep.BackgroundColor3 = COL_SEP; rowSep.BorderSizePixel = 0
+			local selBar = Instance.new("Frame", btn)
+			selBar.Size = UDim2.new(0, 2, 1, -2); selBar.Position = UDim2.new(0, 0, 0, 1)
+			selBar.BackgroundColor3 = Color3.fromRGB(100, 160, 255)
+			selBar.BorderSizePixel = 0
+			selBar.Visible = (selectedModule == d.obj)
+			local nameLbl2 = Instance.new("TextLabel", btn)
+			nameLbl2.Size = UDim2.new(1, -20, 0, 18); nameLbl2.Position = UDim2.new(0, 14, 0, 3)
+			nameLbl2.BackgroundTransparency = 1; nameLbl2.Text = d.obj.Name
+			nameLbl2.Font = Enum.Font.SourceSansBold; nameLbl2.TextSize = 13
+			nameLbl2.TextColor3 = Color3.fromRGB(230, 230, 230)
+			nameLbl2.TextXAlignment = Enum.TextXAlignment.Left
+			nameLbl2.TextTruncate = Enum.TextTruncate.AtEnd
+			local subText
+			if SORT_MODE == "size" and d.byteSize and d.byteSize > 0 then
+				subText = d.byteSize .. " B"
+			else
+				subText = d.obj:GetFullName():gsub("^[^%.]+%.", "")
+			end
+			local pathLbl2 = Instance.new("TextLabel", btn)
+			pathLbl2.Size = UDim2.new(1, -20, 0, 13); pathLbl2.Position = UDim2.new(0, 14, 0, 22)
+			pathLbl2.BackgroundTransparency = 1; pathLbl2.Text = subText
+			pathLbl2.Font = Enum.Font.SourceSans; pathLbl2.TextSize = 11
+			pathLbl2.TextColor3 = Color3.fromRGB(150, 150, 160)
+			pathLbl2.TextXAlignment = Enum.TextXAlignment.Left
+			pathLbl2.TextTruncate = Enum.TextTruncate.AtEnd
+			table.insert(rowFrames, btn)
+			table.insert(allButtons, {
+				btn=btn, dot=dot, selBar=selBar, obj=d.obj,
+				name=d.name, path=d.path,
+			})
+			local clickTime = 0
+			btn.MouseEnter:Connect(function()
+				if selectedModule ~= d.obj then btn.BackgroundColor3 = COL_BTN end
+			end)
+			btn.MouseLeave:Connect(function()
+				if selectedModule ~= d.obj then btn.BackgroundColor3 = COL_EDITOR end
+			end)
+			btn.MouseButton1Click:Connect(function()
+				local now = tick()
+				local isDouble = (now - clickTime) < 0.35
+				clickTime = now
+				for _, ab in ipairs(allButtons) do
+					ab.btn.BackgroundColor3 = COL_EDITOR
+					ab.selBar.Visible = false
+				end
+				btn.BackgroundColor3 = COL_SEL
+				selBar.Visible = true
+				selectedModule = d.obj
+				selectedLbl.Text = d.obj:GetFullName()
+				if isDouble then
+					setStatus("Disassembling " .. d.obj.Name .. "...", COL_YELLOW)
+					setOutput("")
+					task.defer(function() runDisasm(d.obj) end)
+				else
+					setStatus("Selected: " .. d.obj.Name .. " -- Inspect or Disassemble", COL_DIM)
+				end
+			end)
+		end
+		hdr.MouseEnter:Connect(function() hdr.BackgroundColor3 = Color3.fromRGB(34, 34, 46) end)
+		hdr.MouseLeave:Connect(function() hdr.BackgroundColor3 = Color3.fromRGB(28, 28, 36) end)
+		hdr.MouseButton1Click:Connect(function()
+			GroupCollapsed[grp] = not GroupCollapsed[grp]
+			local nowCollapsed = GroupCollapsed[grp]
+			arrow.Text = nowCollapsed and "▶" or "▼"
+			for _, rf in ipairs(rowFrames) do
+				rf.Visible = not nowCollapsed
+			end
+		end)
+	end
+	local f = searchBox.Text:lower()
+	if f ~= "" then
+		for _, d in ipairs(allButtons) do
+			d.btn.Visible = d.name:find(f,1,true) or d.path:find(f,1,true)
+		end
+	end
+	countLbl.Text = #ModuleData .. " module(s)"
+end
+local function setSortMode(mode)
+	SORT_MODE = mode
+	refreshSortHighlight()
+	rebuildList()
+end
+sortNameBtn.MouseButton1Click:Connect(function() setSortMode("name") end)
+sortPathBtn.MouseButton1Click:Connect(function() setSortMode("path") end)
+sortSizeBtn.MouseButton1Click:Connect(function() setSortMode("size") end)
 local function clearList()
-	ModuleList = {}; allButtons = {}
+	ModuleData = {}; ModuleSet = {}; allButtons = {}; GroupCollapsed = {}
 	for _, child in ipairs(listScroll:GetChildren()) do
 		if not child:IsA("UIListLayout") then child:Destroy() end
 	end
 	selectedModule = nil; countLbl.Text = "Cleared."
-	selectedLbl.Text = "Select a module →"
+	selectedLbl.Text = "Select a module"
 	setOutput(""); setStatus("Ready.")
-end
-local function addModuleToList(obj)
-	for _, m in ipairs(ModuleList) do if m == obj then return end end
-	table.insert(ModuleList, obj)
-	local btn = Instance.new("TextButton", listScroll)
-	btn.Size = UDim2.new(1, 0, 0, 26)
-	btn.BackgroundColor3 = COL_EDITOR
-	btn.BorderSizePixel = 0; btn.Text = ""; btn.AutoButtonColor = false
-	local rowSep = Instance.new("Frame", btn)
-	rowSep.Size = UDim2.new(1, 0, 0, 1); rowSep.Position = UDim2.new(0, 0, 1, -1)
-	rowSep.BackgroundColor3 = COL_SEP; rowSep.BorderSizePixel = 0
-	local nameLbl2 = Instance.new("TextLabel", btn)
-	nameLbl2.Size = UDim2.new(1, -8, 0, 15); nameLbl2.Position = UDim2.new(0, 6, 0, 2)
-	nameLbl2.BackgroundTransparency = 1; nameLbl2.Text = obj.Name
-	nameLbl2.Font = Enum.Font.SourceSansBold; nameLbl2.TextSize = 8
-	nameLbl2.TextColor3 = COL_WHITE; nameLbl2.TextXAlignment = Enum.TextXAlignment.Left
-	nameLbl2.TextTruncate = Enum.TextTruncate.AtEnd
-	local pathLbl2 = Instance.new("TextLabel", btn)
-	pathLbl2.Size = UDim2.new(1, -8, 0, 10); pathLbl2.Position = UDim2.new(0, 6, 0, 16)
-	pathLbl2.BackgroundTransparency = 1; pathLbl2.Text = obj:GetFullName()
-	pathLbl2.Font = Enum.Font.SourceSans; pathLbl2.TextSize = 8
-	pathLbl2.TextColor3 = COL_DIM; pathLbl2.TextXAlignment = Enum.TextXAlignment.Left
-	pathLbl2.TextTruncate = Enum.TextTruncate.AtEnd
-	table.insert(allButtons, {
-		btn  = btn, obj = obj,
-		name = obj.Name:lower(), path = obj:GetFullName():lower()
-	})
-	btn.MouseEnter:Connect(function()
-		if selectedModule ~= obj then btn.BackgroundColor3 = COL_BTN end
-	end)
-	btn.MouseLeave:Connect(function()
-		if selectedModule ~= obj then btn.BackgroundColor3 = COL_EDITOR end
-	end)
-	btn.MouseButton1Click:Connect(function()
-		for _, d in ipairs(allButtons) do d.btn.BackgroundColor3 = COL_EDITOR end
-		btn.BackgroundColor3 = COL_SEL
-		selectedModule = obj
-		selectedLbl.Text = obj:GetFullName()
-		setStatus("Selected: " .. obj.Name .. " — Inspect or Disassemble", COL_DIM)
-	end)
 end
 searchBox:GetPropertyChangedSignal("Text"):Connect(function()
 	local f = searchBox.Text:lower()
 	for _, d in ipairs(allButtons) do
-		d.btn.Visible = f == "" or d.name:find(f, 1, true) or d.path:find(f, 1, true)
+		d.btn.Visible = f == "" or d.name:find(f,1,true) or d.path:find(f,1,true)
 	end
 end)
-local SCAN_PATHS = {ReplicatedStorage, ReplicatedFirst, Workspace, Players.LocalPlayer}
-scanBtn.MouseButton1Click:Connect(function()
-	clearList()
+local SCAN_PATHS = {
+	ReplicatedStorage, ReplicatedFirst, Workspace, Players.LocalPlayer,
+	game:GetService("StarterGui"), game:GetService("Chat"), game:GetService("CoreGui"),
+}
+local function doScan(appendMode)
+	if not appendMode then clearList() end
 	setStatus("Scanning...", COL_YELLOW)
-	countLbl.Text = "Scanning..."
+	countLbl.Text = appendMode and "Rescanning..." or "Scanning..."
 	task.spawn(function()
 		local found = 0
+		local function tryAdd(obj)
+			if not obj:IsA("ModuleScript") then return end
+			if ModuleSet[obj] then return end
+			local okProbe, probe = pcall(getscriptbytecode, obj)
+			local readable = okProbe and probe and probe ~= ""
+			local badge    = readable and BADGE_OK or BADGE_BAD
+			local byteSize = readable and #probe or 0
+			ModuleSet[obj] = true
+			table.insert(ModuleData, {
+				obj      = obj,
+				badge    = badge,
+				byteSize = byteSize,
+				name     = obj.Name:lower(),
+				path     = obj:GetFullName():lower(),
+				group    = getGroup(obj),
+			})
+			found += 1
+		end
 		for _, parent in ipairs(SCAN_PATHS) do
 			if parent then
 				local ok, desc = pcall(function() return parent:GetDescendants() end)
-				if ok then
-					for _, obj in ipairs(desc) do
-						if obj:IsA("ModuleScript") then addModuleToList(obj); found += 1 end
-					end
-				end
+				if ok then for _, obj in ipairs(desc) do tryAdd(obj) end end
 				task.wait()
 			end
 		end
 		pcall(function()
-			for _, obj in ipairs(Players.LocalPlayer:WaitForChild("PlayerScripts", 2):GetDescendants()) do
-				if obj:IsA("ModuleScript") then addModuleToList(obj); found += 1 end
+			for _, obj in ipairs(Players.LocalPlayer:WaitForChild("PlayerScripts",2):GetDescendants()) do
+				tryAdd(obj)
 			end
 		end)
-		countLbl.Text = found .. " module(s) found"
-		setStatus("Scan complete — " .. found .. " module(s) found.")
+		rebuildList()
+		setStatus("Scan complete -- " .. found .. " module(s) found.")
 	end)
-end)
+end
+scanBtn.MouseButton1Click:Connect(function()   doScan(false) end)
+rescanBtn.MouseButton1Click:Connect(function() doScan(true)  end)
 clearListBtn.MouseButton1Click:Connect(clearList)
 local function fetchBytecode()
-	if not selectedModule then
-		setStatus("No module selected.", COL_YELLOW); return nil
-	end
+	if not selectedModule then setStatus("No module selected.", COL_YELLOW); return nil end
 	local ok, bytes = pcall(getscriptbytecode, selectedModule)
 	if not ok or not bytes or bytes == "" then
-		setStatus("getscriptbytecode() failed — protected or unloaded.", COL_RED)
-		setOutput("-- Could not read bytecode for:\n-- " .. selectedModule:GetFullName()
+		setStatus("getscriptbytecode() failed -- protected or unloaded.", COL_RED)
+		setOutput("-- Could not read script for:\n-- " .. selectedModule:GetFullName()
 			.. "\n--\n-- Script may be:\n--   Protected (MoonSec, Luraph, etc)\n"
 			.. "--   Not yet loaded\n--   Server-side only\n")
 		return nil
@@ -1675,25 +2051,28 @@ inspectBtn.MouseButton1Click:Connect(function()
 	end
 	local report = buildReport(parsed, selectedModule:GetFullName())
 	setOutput(report)
-	setStatus(string.format("Inspect done — %d strings, %d protos, %d bytes",
+	setStatus(string.format("Inspect done -- %d strings, %d protos, %d bytes",
 		#parsed.stringTable, #parsed.protos, #bytes))
 end)
 disasmBtn.MouseButton1Click:Connect(function()
+	if not selectedModule then setStatus("No module selected.", COL_YELLOW); return end
 	setStatus("Disassembling...", COL_YELLOW); setOutput(""); task.wait()
-	local bytes = fetchBytecode(); if not bytes then return end
-	local opts = table.clone(DEFAULT_OPTIONS)
-	opts.DecompilerMode = "disasm"
-	local ok, result = pcall(Decompile, bytes, opts)
-	if not ok then
-		setStatus("Decompiler error: " .. tostring(result), COL_RED)
-		setOutput("-- Decompiler threw:\n-- " .. tostring(result)); return
-	end
-	setOutput(result or "-- (empty output)")
-	setStatus(string.format("Disassembly done — %d bytes.", #bytes))
+	runDisasm(selectedModule)
 end)
 copyBtn.MouseButton1Click:Connect(function()
 	if _outputRaw == "" then setStatus("Nothing to copy.", COL_YELLOW); return end
 	pcall(setclipboard, _outputRaw)
 	setStatus("Copied to clipboard!")
 end)
-setStatus("made by zuka")
+saveBtn.MouseButton1Click:Connect(function()
+	if _outputRaw == "" then setStatus("Nothing to save.", COL_YELLOW); return end
+	if not writefile then setStatus("writefile not available.", COL_RED); return end
+	local fname = (selectedModule and selectedModule.Name or "output") .. "_disasm.lua"
+	local ok, err = pcall(writefile, fname, prettyPrint(_outputRaw))
+	if ok then
+		setStatus("Saved to workspace/" .. fname, COL_GREEN)
+	else
+		setStatus("Save failed: " .. tostring(err), COL_RED)
+	end
+end)
+setStatus("zukv2 ready.")
