@@ -257,15 +257,15 @@ local DEFAULT_OPTIONS = {
 	DecompilerTimeout    = 10,
 	DecompilerMode       = "disasm",
 	ReaderFloatPrecision = 7,
-	ShowDebugInformation = false,
+	ShowDebugInformation = true,
 	ShowInstructionLines = false,
 	ShowOperationIndex   = false,
 	ShowOperationNames   = false,
-	ShowTrivialOperations= false,
+	ShowTrivialOperations= true,
 	UseTypeInfo          = true,
 	ListUsedGlobals      = true,
-	ReturnElapsedTime    = false,
-	CleanMode            = true,
+	ReturnElapsedTime    = true,
+	CleanMode            = false,
 }
 local LuauCompileUserdataInfo = true
 pcall(function()
@@ -1119,9 +1119,570 @@ local function Decompile(bytecode, options)
 			end
 			writeActions(registerActions[mainProtoId])
 			finalResult = processResult(table.concat(resultParts))
-		else
-			finalResult = processResult("-- one day..")
-		end
+elseif options.DecompilerMode == "lift" then
+    local resultParts = {}
+    local function emit(s) resultParts[#resultParts + 1] = s end
+    local indent = 0
+    local function ind() return string.rep("    ", indent) end
+    local function emitLine(s) emit(ind() .. s .. "\n") end
+    local BINOP = {
+        ADD="+", SUB="-", MUL="*", DIV="/", MOD="%", POW="^",
+        ADDK="+", SUBK="-", MULK="*", DIVK="/", MODK="%", POWK="^",
+        IDIV="//", IDIVK="//",
+        AND="and", OR="or", ANDK="and", ORK="or",
+        CONCAT="..",
+    }
+    local UNOP = { NOT="not ", MINUS="-", LENGTH="#" }
+    local CMPOP = {
+        JUMPIFEQ="==", JUMPIFLE=">=", JUMPIFLT=">",
+        JUMPIFNOTEQ="~=", JUMPIFNOTLE="<=", JUMPIFNOTLT="<",
+    }
+    local CMPOP_INV = {
+        JUMPIFEQ="~=", JUMPIFLE="<", JUMPIFLT="<=",
+        JUMPIFNOTEQ="==", JUMPIFNOTLE=">=", JUMPIFNOTLT=">",
+    }
+    local function analyzeFlow(actions)
+        local fwdJumps  = {}
+        local backJumps = {}
+        local loopHeads = {}
+        local loopEnds  = {}
+        for i, action in ipairs(actions) do
+            if action.hide then continue end
+            local opn = action.opCode and action.opCode.name
+            if not opn then continue end
+            local ed = action.extraData
+            if CMPOP[opn] or opn == "JUMPIF" or opn == "JUMPIFNOT"
+                or opn == "JUMPXEQKNIL" or opn == "JUMPXEQKB"
+                or opn == "JUMPXEQKN"   or opn == "JUMPXEQKS" then
+                local offset = ed and ed[1] or 0
+                local tgt = i + offset
+                if tgt > i then
+                    fwdJumps[i] = tgt
+                elseif tgt <= i then
+                    backJumps[i] = tgt
+                    loopHeads[tgt] = true
+                    loopEnds[tgt] = i
+                end
+            elseif opn == "JUMP" or opn == "JUMPX" then
+                local offset = ed and ed[1] or 0
+                local tgt = i + offset
+                if tgt < i then
+                    backJumps[i] = tgt
+                    loopHeads[tgt] = true
+                    loopEnds[tgt] = i
+                end
+            elseif opn == "FORNPREP" then
+                local offset = ed and ed[1] or 0
+                local tgt = i + offset
+                loopHeads[i] = true
+                loopEnds[i]  = tgt
+            elseif opn == "FORGPREP" or opn == "FORGPREP_INEXT" or opn == "FORGPREP_NEXT" then
+                local offset = (opn == "FORGPREP") and (ed and ed[1] or 0) or 0
+                loopHeads[i] = true
+                loopEnds[i]  = i + math.abs(offset) + 4
+            end
+        end
+        return fwdJumps, backJumps, loopHeads, loopEnds
+    end
+    local function emitProto(protoActions, isMain)
+        local actions  = protoActions.actions
+        local proto    = protoActions.proto
+        local consts   = proto.constants
+        local caps     = proto.captures
+        local inner    = proto.innerProtos
+        local regExpr  = {}
+        local declared = {}
+        local pending  = {}
+        local totalParameters = proto.numParams
+        local function buildRegNames(instrIdx)
+            local names = {}
+            if proto.debugLocals then
+                for _, dl in ipairs(proto.debugLocals) do
+                    if instrIdx >= dl.startPC and instrIdx <= dl.endPC then
+                        names[dl.register] = dl.name
+                    end
+                end
+            end
+            return names
+        end
+        local regNameCache = {}
+        local function fmtReg(r, instrIdx)
+            if instrIdx and proto.debugLocals then
+                local cached = regNameCache[instrIdx]
+                if not cached then
+                    cached = buildRegNames(instrIdx)
+                    regNameCache[instrIdx] = cached
+                end
+                if cached[r] and cached[r] ~= "" then return cached[r] end
+            end
+            local pr = r + 1
+            if pr <= totalParameters then return "p" .. pr end
+            return "v" .. (r - totalParameters + 1)
+        end
+        local function fmtUpv(r)
+            if r == nil then return "upv_unknown" end
+            local du = proto.debugUpvalues
+            if du then
+                local entry = du[r + 1]
+                if entry and entry.name and entry.name ~= "" then return entry.name end
+            end
+            local capturedReg = caps[r]
+            if capturedReg ~= nil and proto.debugLocals then
+                for _, dl in ipairs(proto.debugLocals) do
+                    if dl.register == capturedReg and dl.name and dl.name ~= "" then
+                        return dl.name
+                    end
+                end
+            end
+            return "upv_" .. tostring(r)
+        end
+        local function fmtConst(k)
+            if not k then return "nil" end
+            if k.type == LuauBytecodeTag.LBC_CONSTANT_VECTOR then return tostring(k.value) end
+            if type(tonumber(k.value)) == "number" then
+                return tostring(tonumber(string.format("%0." .. options.ReaderFloatPrecision .. "f", k.value)))
+            end
+            return toEscapedString(k.value)
+        end
+        local function getReg(r, instrIdx)
+            local e = regExpr[r]
+            if e then return e end
+            return fmtReg(r, instrIdx)
+        end
+        local function setReg(r, expr)
+            regExpr[r] = expr
+            pending[r]  = true
+        end
+        local function clearReg(r)
+            regExpr[r] = nil
+            pending[r]  = nil
+        end
+        local function flushReg(r, instrIdx)
+            local expr = regExpr[r]
+            if not expr then return end
+            local name = fmtReg(r, instrIdx)
+            if not declared[r] then
+                declared[r] = true
+                emitLine("local " .. name .. " = " .. expr)
+            else
+                emitLine(name .. " = " .. expr)
+            end
+            clearReg(r)
+        end
+        local function flushAll(instrIdx)
+            for r = 0, proto.maxStackSize - 1 do
+                if pending[r] then flushReg(r, instrIdx) end
+            end
+        end
+        local fwdJumps, backJumps, loopHeads, loopEnds = analyzeFlow(actions)
+        local scopeStack = {}
+        local function pushScope(kind, endIdx, elseIdx)
+            table.insert(scopeStack, { kind=kind, endIdx=endIdx, elseIdx=elseIdx })
+        end
+        local function popScope()
+            return table.remove(scopeStack)
+        end
+        if not isMain then
+            local paramParts = {}
+            for j = 0, proto.numParams - 1 do
+                local name = fmtReg(j, 0)
+                if proto.hasTypeInfo and proto.typedParams and proto.typedParams[j+1] then
+                    name = name .. ": " .. Luau:GetBaseTypeString(proto.typedParams[j+1], true)
+                end
+                paramParts[#paramParts + 1] = name
+            end
+            if proto.isVarArg then paramParts[#paramParts + 1] = "..." end
+            for j = 0, proto.numParams - 1 do declared[j] = true end
+        end
+        local skipNext = false
+        for i, action in ipairs(actions) do
+            if skipNext then skipNext = false; continue end
+            if action.hide then continue end
+            local oci = action.opCode
+            if not oci then continue end
+            local opn = oci.name
+            local ur  = action.usedRegisters
+            local ed  = action.extraData
+            for si = #scopeStack, 1, -1 do
+                local sc = scopeStack[si]
+                if sc.endIdx and i > sc.endIdx then
+                    popScope()
+                    indent = math.max(0, indent - 1)
+                    if sc.kind ~= "repeat" then
+                        emitLine("end")
+                    end
+                elseif sc.elseIdx and i == sc.elseIdx then
+                    indent = math.max(0, indent - 1)
+                    emitLine("else")
+                    indent = indent + 1
+                    sc.elseIdx = nil
+                end
+            end
+            if opn == "LOADNIL" then
+                setReg(ur[1], "nil")
+            elseif opn == "LOADB" then
+                setReg(ur[1], toEscapedString(toBoolean(ed[1])))
+            elseif opn == "LOADN" then
+                setReg(ur[1], tostring(ed[1]))
+            elseif opn == "LOADK" or opn == "LOADKX" then
+                local cidx = (opn == "LOADKX") and ed[1] or ed[1]
+                setReg(ur[1], fmtConst(consts[cidx + 1]))
+            elseif opn == "MOVE" then
+                local src = regExpr[ur[2]]
+                if src then
+                    setReg(ur[1], src)
+                    clearReg(ur[2])
+                else
+                    setReg(ur[1], fmtReg(ur[2], i))
+                end
+            elseif opn == "GETGLOBAL" then
+                local gk = tostring(consts[ed[1] + 1] and consts[ed[1] + 1].value or "")
+                if options.ListUsedGlobals and isValidGlobal(gk) then
+                    table.insert(usedGlobals, gk); usedGlobalsSet[gk] = true
+                end
+                setReg(ur[1], gk)
+            elseif opn == "SETGLOBAL" then
+                flushAll(i)
+                local gk = tostring(consts[ed[1] + 1] and consts[ed[1] + 1].value or "")
+                emitLine(gk .. " = " .. getReg(ur[1], i))
+                clearReg(ur[1])
+            elseif opn == "GETUPVAL" then
+                setReg(ur[1], fmtUpv(caps[ed[1]]))
+            elseif opn == "SETUPVAL" then
+                flushAll(i)
+                emitLine(fmtUpv(caps[ed[1]]) .. " = " .. getReg(ur[1], i))
+                clearReg(ur[1])
+            elseif opn == "GETIMPORT" then
+                local imp = tostring(consts[ed[1] + 1] and consts[ed[1] + 1].value or "")
+                imp = imp:gsub("%.%.+", "."):gsub("^%.", ""):gsub("%.$", "")
+                local totalIdx = bit32.rshift(ed[2] or 0, 30)
+                if totalIdx == 1 and options.ListUsedGlobals and isValidGlobal(imp) then
+                    table.insert(usedGlobals, imp); usedGlobalsSet[imp] = true
+                end
+                setReg(ur[1], imp)
+            elseif opn == "GETTABLE" then
+                setReg(ur[1], getReg(ur[2], i) .. "[" .. getReg(ur[3], i) .. "]")
+            elseif opn == "SETTABLE" then
+                flushAll(i)
+                emitLine(getReg(ur[2], i) .. "[" .. getReg(ur[3], i) .. "] = " .. getReg(ur[1], i))
+            elseif opn == "GETTABLEKS" then
+                local key = consts[ed[2] + 1] and consts[ed[2] + 1].value
+                setReg(ur[1], getReg(ur[2], i) .. formatIndexString(key))
+            elseif opn == "SETTABLEKS" then
+                flushAll(i)
+                local key = consts[ed[2] + 1] and consts[ed[2] + 1].value
+                emitLine(getReg(ur[2], i) .. formatIndexString(key) .. " = " .. getReg(ur[1], i))
+                clearReg(ur[1])
+            elseif opn == "GETTABLEN" then
+                setReg(ur[1], getReg(ur[2], i) .. "[" .. (ed[1] + 1) .. "]")
+            elseif opn == "SETTABLEN" then
+                flushAll(i)
+                emitLine(getReg(ur[2], i) .. "[" .. (ed[1] + 1) .. "] = " .. getReg(ur[1], i))
+            elseif opn == "NEWTABLE" or opn == "DUPTABLE" then
+                setReg(ur[1], "{}")
+            elseif opn == "SETLIST" then
+                local tblReg = ur[1]
+                local tblExpr = regExpr[tblReg]
+                local parts = {}
+                local vc = ed[2]
+                if vc and vc > 0 then
+                    for k = 2, #ur do
+                        parts[#parts + 1] = getReg(ur[k], i)
+                    end
+                end
+                if tblExpr == "{}" and #parts > 0 then
+                    setReg(tblReg, "{" .. table.concat(parts, ", ") .. "}")
+                else
+                    flushAll(i)
+                end
+            elseif BINOP[opn] then
+                local op = BINOP[opn]
+                local isK = opn:sub(-1) == "K"
+                local lhs, rhs
+                if opn == "CONCAT" then
+                    local parts = {}
+                    for k = 2, #ur do parts[#parts + 1] = getReg(ur[k], i) end
+                    setReg(ur[1], table.concat(parts, " .. "))
+                elseif opn == "SUBRK" or opn == "DIVRK" then
+                    lhs = fmtConst(consts[ed[1] + 1])
+                    rhs = getReg(ur[2], i)
+                    setReg(ur[1], lhs .. " " .. op .. " " .. rhs)
+                elseif isK then
+                    lhs = getReg(ur[2], i)
+                    rhs = fmtConst(consts[ed[1] + 1])
+                    setReg(ur[1], lhs .. " " .. op .. " " .. rhs)
+                else
+                    lhs = getReg(ur[2], i)
+                    rhs = getReg(ur[3], i)
+                    setReg(ur[1], lhs .. " " .. op .. " " .. rhs)
+                end
+            elseif UNOP[opn] then
+                local op = UNOP[opn]
+                local src = getReg(ur[2], i)
+                if src:find("[%s%(]") then src = "(" .. src .. ")" end
+                setReg(ur[1], op .. src)
+            elseif opn == "NEWCLOSURE" or opn == "DUPCLOSURE" then
+                local p2
+                if opn == "NEWCLOSURE" then
+                    p2 = inner[ed[1] + 1]
+                else
+                    local c = consts[ed[1] + 1]
+                    if c then p2 = protoTable[c.value - 1] end
+                end
+                if p2 and registerActions[p2.id] then
+                    local pActions = registerActions[p2.id]
+                    local pProto   = pActions.proto
+                    local paramParts = {}
+                    for j = 0, pProto.numParams - 1 do
+                        local nm
+                        if pProto.debugLocals then
+                            for _, dl in ipairs(pProto.debugLocals) do
+                                if dl.startPC == 0 and dl.register == j then nm = dl.name; break end
+                            end
+                        end
+                        paramParts[#paramParts + 1] = nm or ("p" .. (j + 1))
+                    end
+                    if pProto.isVarArg then paramParts[#paramParts + 1] = "..." end
+                    local header = "function(" .. table.concat(paramParts, ", ") .. ")\n"
+                    local savedParts = resultParts
+                    local savedIndent = indent
+                    resultParts = {}
+                    indent = 0
+                    emitProto(pActions, false)
+                    local innerSrc = table.concat(resultParts)
+                    resultParts = savedParts
+                    indent = savedIndent
+                    local indented = ""
+                    for line in (innerSrc .. "\n"):gmatch("[^\n]*\n") do
+                        indented = indented .. ind() .. "    " .. line
+                    end
+                    setReg(ur[1], header .. indented .. ind() .. "end")
+                else
+                    setReg(ur[1], "function(...)  end")
+                end
+            elseif opn == "NAMECALL" then
+                local method = tostring(consts[ed[2] + 1] and consts[ed[2] + 1].value or "")
+                setReg(ur[1], getReg(ur[2], i) .. ":" .. method)
+            elseif opn == "CALL" then
+                flushAll(i)
+                local baseR = ur[1]
+                local nArgs = ed[1] - 1
+                local nRes  = ed[2] - 1
+                local funcExpr = getReg(baseR, i)
+                local argParts = {}
+                if nArgs == -1 then
+                    argParts[1] = "..."
+                else
+                    for k = 1, nArgs do
+                        argParts[k] = getReg(baseR + k, i)
+                    end
+                end
+                local callExpr = funcExpr .. "(" .. table.concat(argParts, ", ") .. ")"
+                if nRes == 0 then
+                    emitLine(callExpr)
+                    clearReg(baseR)
+                elseif nRes == 1 then
+                    setReg(baseR, callExpr)
+                elseif nRes == -1 then
+                    emitLine(callExpr)
+                    clearReg(baseR)
+                else
+                    local lhsParts = {}
+                    for k = 0, nRes - 1 do
+                        local nm = fmtReg(baseR + k, i)
+                        if not declared[baseR + k] then
+                            declared[baseR + k] = true
+                            nm = "local " .. nm
+                        end
+                        lhsParts[k + 1] = nm
+                    end
+                    emitLine(table.concat(lhsParts, ", ") .. " = " .. callExpr)
+                    for k = 0, nRes - 1 do clearReg(baseR + k) end
+                end
+            elseif opn == "RETURN" then
+                flushAll(i)
+                local baseR = ur[1]
+                local tot   = ed[1] - 2
+                if tot == -2 then
+                    emitLine("return " .. getReg(baseR, i) .. ", ...")
+                elseif tot >= 0 then
+                    local parts = {}
+                    for k = 0, tot do parts[k + 1] = getReg(baseR + k, i) end
+                    if #parts > 0 then
+                        emitLine("return " .. table.concat(parts, ", "))
+                    elseif not isMain then
+                        emitLine("return")
+                    end
+                end
+                for k = 0, math.max(0, tot) do clearReg(baseR + k) end
+            elseif opn == "FORNPREP" then
+                flushAll(i)
+                local base   = ur[1]
+                local limit  = getReg(ur[2], i)
+                local step   = getReg(ur[3], i)
+                local var    = getReg(ur[3], i)
+                local ctr    = fmtReg(base + 2, i)
+                local from   = getReg(base, i)
+                local to2    = getReg(base + 1, i)
+                local step2  = getReg(base + 2, i)
+                local forLine = "for " .. ctr .. " = " .. from .. ", " .. to2
+                if step2 ~= "1" and step2 ~= "" and step2 ~= ctr then
+                    forLine = forLine .. ", " .. step2
+                end
+                forLine = forLine .. " do"
+                emitLine(forLine)
+                indent = indent + 1
+                pushScope("for", loopEnds[i] and (loopEnds[i] + 1) or (i + 100))
+            elseif opn == "FORNLOOP" then
+            elseif opn == "FORGPREP_INEXT" then
+                flushAll(i)
+                local base = ur[1]
+                local k    = fmtReg(base + 3, i)
+                local v    = fmtReg(base + 4, i)
+                emitLine("for " .. k .. ", " .. v .. " in ipairs(" .. getReg(base, i) .. ") do")
+                indent = indent + 1
+                pushScope("for", loopEnds[i] and (loopEnds[i] + 1) or (i + 50))
+            elseif opn == "FORGPREP_NEXT" then
+                flushAll(i)
+                local base = ur[1]
+                local k    = fmtReg(base + 3, i)
+                local v    = fmtReg(base + 4, i)
+                emitLine("for " .. k .. ", " .. v .. " in pairs(" .. getReg(base, i) .. ") do")
+                indent = indent + 1
+                pushScope("for", loopEnds[i] and (loopEnds[i] + 1) or (i + 50))
+            elseif opn == "FORGPREP" then
+                flushAll(i)
+                local base   = ur[1]
+                local offset = ed and ed[1] or 0
+                local endIdx = i + math.abs(offset) + 2
+                local vParts = {}
+                local flAction = actions[endIdx]
+                if flAction and flAction.opCode and flAction.opCode.name == "FORGLOOP" then
+                    local nv = bit32.band(flAction.extraData and flAction.extraData[2] or 0, 0xFF)
+                    for k = 1, nv do
+                        vParts[k] = fmtReg(base + 2 + k, i)
+                    end
+                end
+                if #vParts == 0 then vParts = { fmtReg(base + 3, i), fmtReg(base + 4, i) } end
+                emitLine("for " .. table.concat(vParts, ", ") .. " in " .. getReg(base, i) .. " do")
+                indent = indent + 1
+                pushScope("for", endIdx + 1)
+            elseif opn == "FORGLOOP" then
+            elseif CMPOP[opn] then
+                flushAll(i)
+                local op   = CMPOP_INV[opn]
+                local lhs  = getReg(ur[1], i)
+                local rhs  = getReg(ur[2], i)
+                local tgt  = fwdJumps[i]
+                local elseIdx = nil
+                if tgt then
+                    local skipAction = actions[tgt - 1]
+                    if skipAction and skipAction.opCode and
+                       (skipAction.opCode.name == "JUMP" or skipAction.opCode.name == "JUMPX") then
+                        local skipOffset = skipAction.extraData and skipAction.extraData[1] or 0
+                        elseIdx = tgt
+                        tgt     = tgt + skipOffset
+                    end
+                end
+                emitLine("if " .. lhs .. " " .. op .. " " .. rhs .. " then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 20), elseIdx)
+            elseif opn == "JUMPIF" then
+                flushAll(i)
+                local tgt = fwdJumps[i]
+                local elseIdx = nil
+                if tgt then
+                    local skipAction = actions[tgt - 1]
+                    if skipAction and skipAction.opCode and
+                       (skipAction.opCode.name == "JUMP" or skipAction.opCode.name == "JUMPX") then
+                        local skipOffset = skipAction.extraData and skipAction.extraData[1] or 0
+                        elseIdx = tgt
+                        tgt     = tgt + skipOffset
+                    end
+                end
+                emitLine("if not " .. getReg(ur[1], i) .. " then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 10), elseIdx)
+            elseif opn == "JUMPIFNOT" then
+                flushAll(i)
+                local tgt = fwdJumps[i]
+                local elseIdx = nil
+                if tgt then
+                    local skipAction = actions[tgt - 1]
+                    if skipAction and skipAction.opCode and
+                       (skipAction.opCode.name == "JUMP" or skipAction.opCode.name == "JUMPX") then
+                        local skipOffset = skipAction.extraData and skipAction.extraData[1] or 0
+                        elseIdx = tgt
+                        tgt     = tgt + skipOffset
+                    end
+                end
+                emitLine("if " .. getReg(ur[1], i) .. " then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 10), elseIdx)
+            elseif opn == "JUMPXEQKNIL" then
+                flushAll(i)
+                local rev  = bit32.rshift(ed[2] or 0, 0x1F) ~= 1
+                local sign = rev and "~=" or "=="
+                local tgt  = fwdJumps[i]
+                emitLine("if " .. getReg(ur[1], i) .. " " .. sign .. " nil then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 10))
+            elseif opn == "JUMPXEQKB" then
+                flushAll(i)
+                local val  = tostring(toBoolean(bit32.band(ed[2] or 0, 1)))
+                local rev  = bit32.rshift(ed[2] or 0, 0x1F) ~= 1
+                local sign = rev and "~=" or "=="
+                local tgt  = fwdJumps[i]
+                emitLine("if " .. getReg(ur[1], i) .. " " .. sign .. " " .. val .. " then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 10))
+            elseif opn == "JUMPXEQKN" or opn == "JUMPXEQKS" then
+                flushAll(i)
+                local cidx = bit32.band(ed[2] or 0, 0xFFFFFF)
+                local val  = fmtConst(consts[cidx + 1])
+                local rev  = bit32.rshift(ed[2] or 0, 0x1F) ~= 1
+                local sign = rev and "~=" or "=="
+                local tgt  = fwdJumps[i]
+                emitLine("if " .. getReg(ur[1], i) .. " " .. sign .. " " .. val .. " then")
+                indent = indent + 1
+                pushScope("if", tgt and (tgt - 1) or (i + 10))
+            elseif opn == "JUMP" or opn == "JUMPX" or opn == "JUMPBACK" then
+                flushAll(i)
+            elseif opn == "GETVARARGS" then
+                local vc2 = ed[1] - 1
+                if vc2 == -1 then
+                    setReg(ur[1], "...")
+                else
+                    local parts = {}
+                    for k = 1, vc2 do parts[k] = fmtReg(ur[k], i) end
+                    flushAll(i)
+                    local lhsParts = {}
+                    for k = 1, vc2 do
+                        local r = ur[k]
+                        if not declared[r] then declared[r] = true
+                            lhsParts[k] = "local " .. fmtReg(r, i)
+                        else lhsParts[k] = fmtReg(r, i) end
+                    end
+                    emitLine(table.concat(lhsParts, ", ") .. " = ...")
+                end
+            else
+            end
+        end
+        for si = #scopeStack, 1, -1 do
+            local sc = scopeStack[si]
+            indent = math.max(0, indent - 1)
+            if sc.kind ~= "repeat" then emitLine("end") end
+        end
+        flushAll(0)
+    end
+    local mainProtoActions = registerActions[mainProtoId]
+    if mainProtoActions then
+        if mainProtoActions.proto.flags and mainProtoActions.proto.flags.native then
+            emit("--!native\n")
+        end
+        emitProto(mainProtoActions, true)
+    end
+    finalResult = processResult(table.concat(resultParts))		end
 		return finalResult
 	end
 	local function manager(proceed, issue)
@@ -1603,18 +2164,18 @@ local function runDecompile(inst)
             .. "\n-- (getscriptbytecode may be unsupported or the script is empty)"
     end
     local opts = {
-        EnabledRemarks       = { ColdRemark=false, InlineRemark=true },
+        EnabledRemarks       = { ColdRemark=true, InlineRemark=true },
         DecompilerTimeout    = 10,
-        DecompilerMode       = "disasm",
+        DecompilerMode       = "lift",
         ReaderFloatPrecision = 7,
         ShowDebugInformation = false,
-        ShowInstructionLines = false,
+        ShowInstructionLines = true,
         ShowOperationIndex   = false,
         ShowOperationNames   = false,
-        ShowTrivialOperations= false,
+        ShowTrivialOperations= true,
         UseTypeInfo          = true,
         ListUsedGlobals      = true,
-        ReturnElapsedTime    = false,
+        ReturnElapsedTime    = true,
         CleanMode            = true,
     }
     local ok2, raw = pcall(ZukDecompile, bytecode, opts)
@@ -1636,28 +2197,28 @@ local sg = mk("ScreenGui", {
 local main = mk("Frame", {
     Name="Main", Size=UDim2.new(0,760,0,480),
     Position=UDim2.new(0.5,-380,0.5,-240),
-    BackgroundColor3=Color3.fromRGB(35,35,35), BorderSizePixel=0
+    BackgroundColor3=Color3.fromRGB(35,35,35), BorderSizePixel=1
 }, sg)
 mk("UIStroke",{Color=Color3.fromRGB(60,60,60),Thickness=1}, main)
 local topBar = mk("Frame",{
     Name="TopBar", Size=UDim2.new(1,0,0,25),
-    BackgroundColor3=Color3.fromRGB(45,45,45), BorderSizePixel=0
+    BackgroundColor3=Color3.fromRGB(45,45,45), BorderSizePixel=1
 }, main)
 mk("TextLabel",{
     Name="Title", Size=UDim2.new(1,-60,1,0), Position=UDim2.new(0,10,0,0),
-    BackgroundTransparency=1, Text="Zukv2 Explorer + Decompiler  —  All-in-One",
+    BackgroundTransparency=1, Text="zukv2 Explorer",
     TextColor3=Color3.fromRGB(220,220,220), TextXAlignment=Enum.TextXAlignment.Left,
     Font=Enum.Font.SourceSansBold, TextSize=14
 }, topBar)
 local closeBtn = mk("TextButton",{
     Name="Close", Size=UDim2.new(0,25,1,0), Position=UDim2.new(1,-25,0,0),
     BackgroundColor3=Color3.fromRGB(180,50,50), BackgroundTransparency=1,
-    Text="X", TextColor3=Color3.fromRGB(255,255,255), BorderSizePixel=0
+    Text="X", TextColor3=Color3.fromRGB(255,255,255), BorderSizePixel=1
 }, topBar)
 local quickNav = mk("ScrollingFrame",{
     Name="QuickNav", Size=UDim2.new(1,0,0,28), Position=UDim2.new(0,0,0,25),
     BackgroundColor3=Color3.fromRGB(40,40,40), BorderSizePixel=0,
-    CanvasSize=UDim2.new(0,0,0,0), ScrollBarThickness=0,
+    CanvasSize=UDim2.new(0,0,0,0), ScrollBarThickness=1,
     AutomaticCanvasSize=Enum.AutomaticSize.X
 }, main)
 local qvLayout = mk("UIListLayout",{
@@ -1684,7 +2245,7 @@ local searchInput = mk("TextBox",{
     Name="Input", Size=UDim2.new(1,-10,1,0), Position=UDim2.new(0,5,0,0),
     BackgroundTransparency=1, TextColor3=Color3.fromRGB(255,255,255),
     TextXAlignment=Enum.TextXAlignment.Left,
-    PlaceholderText="Search hierarchy...", Text="", TextSize=13
+    PlaceholderText="Search...", Text="", TextSize=6
 }, searchFrame)
 local listFrame = mk("Frame",{
     Name="List", Size=UDim2.new(1,0,1,-24), Position=UDim2.new(0,0,0,24),
@@ -1705,7 +2266,7 @@ local decompHeader = mk("Frame",{
 local decompTitle = mk("TextLabel",{
     Name="DecompTitle",
     Size=UDim2.new(1,-160,1,0), Position=UDim2.new(0,8,0,0),
-    BackgroundTransparency=1, Text="Select a Script / LocalScript / ModuleScript",
+    BackgroundTransparency=1, Text="Path:",
     TextColor3=Color3.fromRGB(160,160,160),
     TextXAlignment=Enum.TextXAlignment.Left,
     Font=Enum.Font.SourceSansBold, TextSize=12
@@ -1713,23 +2274,23 @@ local decompTitle = mk("TextLabel",{
 local decompBtn = mk("TextButton",{
     Name="DecompBtn",
     Size=UDim2.new(0,80,0,20), Position=UDim2.new(1,-85,0,3),
-    BackgroundColor3=Color3.fromRGB(45,90,170), BorderSizePixel=0,
-    Text="Decompile", TextColor3=Color3.fromRGB(255,255,255),
-    Font=Enum.Font.SourceSansBold, TextSize=11
+    BackgroundColor3=Color3.fromRGB(50,50,50), BorderSizePixel=4,
+    Text="View", TextColor3=Color3.fromRGB(255,255,255),
+    Font=Enum.Font.SourceSansBold, TextSize=10
 }, decompHeader)
-mk("UICorner",{CornerRadius=UDim.new(0,3)}, decompBtn)
+mk("UICorner",{CornerRadius=UDim.new(0,0)}, decompBtn)
 local copyBtn = mk("TextButton",{
     Name="CopyBtn",
     Size=UDim2.new(0,60,0,20), Position=UDim2.new(1,-150,0,3),
     BackgroundColor3=Color3.fromRGB(50,50,50), BorderSizePixel=0,
-    Text="⎘ Copy", TextColor3=Color3.fromRGB(210,210,210),
-    Font=Enum.Font.SourceSansBold, TextSize=11
+    Text="Copy", TextColor3=Color3.fromRGB(210,210,210),
+    Font=Enum.Font.SourceSansBold, TextSize=10
 }, decompHeader)
-mk("UICorner",{CornerRadius=UDim.new(0,3)}, copyBtn)
+mk("UICorner",{CornerRadius=UDim.new(0,0)}, copyBtn)
 local codeScroll = mk("ScrollingFrame",{
     Name="CodeScroll",
     Size=UDim2.new(1,0,1,-26), Position=UDim2.new(0,0,0,26),
-    BackgroundColor3=Color3.fromRGB(22,22,22), BorderSizePixel=0,
+    BackgroundColor3=Color3.fromRGB(22,22,22), BorderSizePixel=1,
     ScrollBarThickness=6,
     ScrollBarImageColor3=Color3.fromRGB(70,70,70),
     CanvasSize=UDim2.new(0,0,0,0),
@@ -1749,13 +2310,13 @@ local codeLabel = mk("TextLabel",{
     TextXAlignment=Enum.TextXAlignment.Left,
     TextYAlignment=Enum.TextYAlignment.Top,
     Font=Enum.Font.Code, TextSize=12,
-    RichText=true, TextWrapped=false,
+    RichText=true, TextWrapped=true,
     Text='<font color="#555555">-- zukv2 decompiler\n-- by @OverZuka</font>'
 }, codeScroll)
 local resizeHandle = mk("Frame",{
     Name="ResizeHandle",
     Size=UDim2.new(0,12,0,12), Position=UDim2.new(1,-12,1,-12),
-    BackgroundTransparency=1, ZIndex=15
+    BackgroundTransparency=0.4, ZIndex=15
 }, main)
 sg.Parent = playerGui
 local function buildRows(inst, depth, result)
@@ -1799,7 +2360,7 @@ local function renderRows()
             BackgroundTransparency=1,
             Text=inst.Name,
             TextColor3=isScript and Color3.fromRGB(253,251,172) or Color3.fromRGB(220,220,220),
-            TextXAlignment=Enum.TextXAlignment.Left, TextSize=13
+            TextXAlignment=Enum.TextXAlignment.Left, TextSize=10
         }, indent)
         entry.MouseButton1Click:Connect(function()
             closeCtx(); selected = inst
@@ -1814,8 +2375,8 @@ local function renderRows()
             local exp = mk("TextButton",{
                 Size=UDim2.fromOffset(16,ROW_H), Position=UDim2.fromOffset(-16,0),
                 BackgroundTransparency=1,
-                Text=expanded[inst] and "⚫" or "⚫",
-                TextColor3=Color3.fromRGB(170,170,170), TextSize=10
+                Text=expanded[inst] and "-" or "-",
+                TextColor3=Color3.fromRGB(170,170,170), TextSize=8
             }, indent)
             exp.MouseButton1Click:Connect(function()
                 expanded[inst] = not expanded[inst]
@@ -1858,15 +2419,15 @@ decompBtn.MouseButton1Click:Connect(function()
         end
         codeLabel.Text = table.concat(lines, "\n")
         decompTitle.Text = selected.ClassName .. " › " .. selected.Name
-        decompBtn.Text   = "Decompile"
-        decompBtn.BackgroundColor3 = Color3.fromRGB(45,90,170)
+        decompBtn.Text   = "View"
+        decompBtn.BackgroundColor3 = Color3.fromRGB(50,50,50)
     end)
 end)
 copyBtn.MouseButton1Click:Connect(function()
     if lastDecompResult ~= "" then
         pcall(setclipboard, lastDecompResult)
         copyBtn.Text = "✓ Copied"
-        task.delay(1.5, function() copyBtn.Text = "⎘ Copy" end)
+        task.delay(1.5, function() copyBtn.Text = "Copy" end)
     end
 end)
 for i, svcName in ipairs(QUICK_NAV_SERVICES) do
