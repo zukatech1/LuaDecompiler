@@ -3081,36 +3081,224 @@ refreshProps = function()
             Size=UDim2.new(1,0,0,PROPS_ROW_H),
             BackgroundColor3=isEven and Color3.fromRGB(28,28,28) or Color3.fromRGB(33,33,33),
             BackgroundTransparency=0, BorderSizePixel=0,
-            LayoutOrder=order
+            LayoutOrder=order, ClipsDescendants=true
         }, propsScroll)
-        -- color swatch for Color3 values
-        if typeof(val) == "Color3" then
-            mk("Frame",{
-                Size=UDim2.new(0,12,0,12), Position=UDim2.new(0,2,0.5,-6),
-                BackgroundColor3=val, BorderSizePixel=1
-            }, row)
-        end
+
         mk("TextLabel",{
-            Size=UDim2.new(0.52,0,1,0), Position=UDim2.new(0,2,0,0),
+            Size=UDim2.new(0.5,0,1,0), Position=UDim2.new(0,4,0,0),
             BackgroundTransparency=1,
             Text=propName,
             TextColor3=Color3.fromRGB(190,190,190),
             TextXAlignment=Enum.TextXAlignment.Left,
             Font=Enum.Font.SourceSans, TextSize=11,
             TextTruncate=Enum.TextTruncate.AtEnd,
-            ClipsDescendants=true
         }, row)
-        local valColor = typeof(val)=="Color3" and Color3.fromRGB(180,180,180) or getTypeColor(val)
-        mk("TextLabel",{
-            Size=UDim2.new(0.48,-4,1,0), Position=UDim2.new(0.52,0,0,0),
+
+        local valType = typeof(val)
+        local valColor = valType=="Color3" and Color3.fromRGB(180,180,180) or getTypeColor(val)
+
+        -- value display label (right half)
+        local valLabel = mk("TextLabel",{
+            Size=UDim2.new(0.5,-2,1,0), Position=UDim2.new(0.5,0,0,0),
             BackgroundTransparency=1,
             Text=serializeValShort(val),
             TextColor3=valColor,
             TextXAlignment=Enum.TextXAlignment.Left,
             Font=Enum.Font.SourceSans, TextSize=11,
             TextTruncate=Enum.TextTruncate.AtEnd,
-            ClipsDescendants=true
         }, row)
+
+        -- color swatch overlay for Color3
+        local swatch
+        if valType == "Color3" then
+            swatch = mk("Frame",{
+                Size=UDim2.new(0,11,0,11),
+                Position=UDim2.new(0.5,2,0.5,-5),
+                BackgroundColor3=val, BorderSizePixel=1,
+                ZIndex=2
+            }, row)
+            valLabel.Position = UDim2.new(0.5,15,0,0)
+            valLabel.Size     = UDim2.new(0.5,-17,1,0)
+        end
+
+        -- ── Edit logic per type ──────────────────────────────────────────────
+        local activeEdit = nil  -- currently open inline editor for this row
+
+        local function closeEdit()
+            if activeEdit then activeEdit:Destroy(); activeEdit = nil end
+            row.Size = UDim2.new(1,0,0,PROPS_ROW_H)
+        end
+
+        local function applyVal(newVal)
+            local ok, err = pcall(function() inst[propName] = newVal end)
+            if ok then
+                val = newVal
+                valLabel.Text = serializeValShort(newVal)
+                valLabel.TextColor3 = getTypeColor(newVal)
+                if swatch and typeof(newVal)=="Color3" then
+                    swatch.BackgroundColor3 = newVal
+                end
+            else
+                warn("[zukv2] prop set failed: "..tostring(err))
+            end
+            closeEdit()
+        end
+
+        local function makeInlineBox(startText, onConfirm)
+            closeEdit()
+            row.Size = UDim2.new(1,0,0,PROPS_ROW_H+2)
+            local box = mk("TextBox",{
+                Size=UDim2.new(0.5,-2,1,-2), Position=UDim2.new(0.5,0,0,1),
+                BackgroundColor3=Color3.fromRGB(20,20,20),
+                BorderSizePixel=1, BorderColor3=Color3.fromRGB(0,120,215),
+                Text=startText, TextColor3=Color3.fromRGB(220,220,220),
+                TextXAlignment=Enum.TextXAlignment.Left,
+                Font=Enum.Font.Code, TextSize=11,
+                ClearTextOnFocus=false, ZIndex=10
+            }, row)
+            activeEdit = box
+            box:CaptureFocus()
+            box.FocusLost:Connect(function(enterPressed)
+                if enterPressed then onConfirm(box.Text) end
+                closeEdit()
+            end)
+            return box
+        end
+
+        -- clickable value area
+        local hitbox = mk("TextButton",{
+            Size=UDim2.new(0.5,0,1,0), Position=UDim2.new(0.5,0,0,0),
+            BackgroundTransparency=1, Text="", ZIndex=3
+        }, row)
+
+        hitbox.MouseEnter:Connect(function()
+            row.BackgroundColor3 = Color3.fromRGB(45,45,55)
+        end)
+        hitbox.MouseLeave:Connect(function()
+            row.BackgroundColor3 = isEven and Color3.fromRGB(28,28,28) or Color3.fromRGB(33,33,33)
+        end)
+
+        hitbox.MouseButton1Click:Connect(function()
+            if valType == "boolean" then
+                -- toggle
+                applyVal(not inst[propName])
+
+            elseif valType == "string" then
+                makeInlineBox(inst[propName], function(t) applyVal(t) end)
+
+            elseif valType == "number" then
+                makeInlineBox(tostring(inst[propName]), function(t)
+                    local n = tonumber(t)
+                    if n then applyVal(n) else closeEdit() end
+                end)
+
+            elseif valType == "EnumItem" then
+                -- cycle through enum values
+                local ok2, items = pcall(function()
+                    return inst[propName].EnumType:GetEnumItems()
+                end)
+                if ok2 and items then
+                    local cur = inst[propName]
+                    local nextItem = items[1]
+                    for i2, item in ipairs(items) do
+                        if item == cur then
+                            nextItem = items[(i2 % #items) + 1]; break
+                        end
+                    end
+                    applyVal(nextItem)
+                end
+
+            elseif valType == "Color3" then
+                -- open a small RGB popup
+                closeEdit()
+                row.Size = UDim2.new(1,0,0,PROPS_ROW_H + 22)
+                local popup = mk("Frame",{
+                    Size=UDim2.new(1,0,0,22), Position=UDim2.new(0,0,0,PROPS_ROW_H),
+                    BackgroundColor3=Color3.fromRGB(22,22,22), BorderSizePixel=0, ZIndex=10
+                }, row)
+                activeEdit = popup
+                local cur = inst[propName]
+                local rBox = mk("TextBox",{
+                    Size=UDim2.new(0,38,1,-4), Position=UDim2.new(0,2,0,2),
+                    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=1,
+                    Text=tostring(math.floor(cur.R*255)),
+                    TextColor3=Color3.fromRGB(255,100,100),
+                    Font=Enum.Font.Code, TextSize=11, ZIndex=11, ClearTextOnFocus=false
+                }, popup)
+                local gBox = mk("TextBox",{
+                    Size=UDim2.new(0,38,1,-4), Position=UDim2.new(0,42,0,2),
+                    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=1,
+                    Text=tostring(math.floor(cur.G*255)),
+                    TextColor3=Color3.fromRGB(100,220,100),
+                    Font=Enum.Font.Code, TextSize=11, ZIndex=11, ClearTextOnFocus=false
+                }, popup)
+                local bBox = mk("TextBox",{
+                    Size=UDim2.new(0,38,1,-4), Position=UDim2.new(0,82,0,2),
+                    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=1,
+                    Text=tostring(math.floor(cur.B*255)),
+                    TextColor3=Color3.fromRGB(100,150,255),
+                    Font=Enum.Font.Code, TextSize=11, ZIndex=11, ClearTextOnFocus=false
+                }, popup)
+                local applyBtn = mk("TextButton",{
+                    Size=UDim2.new(0,30,1,-4), Position=UDim2.new(0,122,0,2),
+                    BackgroundColor3=Color3.fromRGB(0,100,200), BorderSizePixel=0,
+                    Text="OK", TextColor3=Color3.fromRGB(255,255,255),
+                    Font=Enum.Font.SourceSansBold, TextSize=11, ZIndex=11
+                }, popup)
+                applyBtn.MouseButton1Click:Connect(function()
+                    local r2 = tonumber(rBox.Text) or 0
+                    local g2 = tonumber(gBox.Text) or 0
+                    local b2 = tonumber(bBox.Text) or 0
+                    applyVal(Color3.fromRGB(
+                        math.clamp(r2,0,255),
+                        math.clamp(g2,0,255),
+                        math.clamp(b2,0,255)
+                    ))
+                end)
+
+            elseif valType == "Vector3" then
+                local cur = inst[propName]
+                makeInlineBox(("%.4g,%.4g,%.4g"):format(cur.X,cur.Y,cur.Z), function(t)
+                    local x,y,z = t:match("([^,]+),([^,]+),([^,]+)")
+                    local nx,ny,nz = tonumber(x),tonumber(y),tonumber(z)
+                    if nx and ny and nz then applyVal(Vector3.new(nx,ny,nz)) else closeEdit() end
+                end)
+
+            elseif valType == "Vector2" then
+                local cur = inst[propName]
+                makeInlineBox(("%.4g,%.4g"):format(cur.X,cur.Y), function(t)
+                    local x,y = t:match("([^,]+),([^,]+)")
+                    local nx,ny = tonumber(x),tonumber(y)
+                    if nx and ny then applyVal(Vector2.new(nx,ny)) else closeEdit() end
+                end)
+
+            elseif valType == "UDim2" then
+                local cur = inst[propName]
+                makeInlineBox(("%.4g,%.4g,%.4g,%.4g"):format(
+                    cur.X.Scale,cur.X.Offset,cur.Y.Scale,cur.Y.Offset), function(t)
+                    local a,b2,c,d = t:match("([^,]+),([^,]+),([^,]+),([^,]+)")
+                    local na,nb,nc,nd = tonumber(a),tonumber(b2),tonumber(c),tonumber(d)
+                    if na and nb and nc and nd then
+                        applyVal(UDim2.new(na,nb,nc,nd))
+                    else closeEdit() end
+                end)
+
+            elseif valType == "UDim" then
+                local cur = inst[propName]
+                makeInlineBox(("%.4g,%.4g"):format(cur.Scale,cur.Offset), function(t)
+                    local s,o = t:match("([^,]+),([^,]+)")
+                    local ns,no = tonumber(s),tonumber(o)
+                    if ns and no then applyVal(UDim.new(ns,no)) else closeEdit() end
+                end)
+
+            elseif valType == "BrickColor" then
+                makeInlineBox(inst[propName].Name, function(t)
+                    local ok3, bc = pcall(BrickColor.new, t)
+                    if ok3 then applyVal(bc) else closeEdit() end
+                end)
+            end
+        end)
+
         table.insert(propRowFrames, row)
     end
 end
@@ -3175,12 +3363,13 @@ expanded[game] = true
 rows = buildRows(treeRoot, 0, {})
 renderRows()
   
-    
- --[[
-            _           ____   ™ 
+--[[
+
+            __          ____   ™ 
   _____   _| | ____   _|___ \  
  |_  / | | | |/ /\ \ / / __) | 
   / /| |_| |   <  \ V / / __/  
  /___|\__,_|_|\_\  \_/ |_____| 
-                               
+
+
 --]]
