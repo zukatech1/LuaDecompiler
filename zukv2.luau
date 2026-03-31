@@ -709,11 +709,23 @@ local function main()
 					end
 					-- Upvalue names from debugUpvalues
 					local function fmtUpv(r)
+						if r == nil then return "upv_unknown" end
 						local du = proto.debugUpvalues
-						if du and du[r+1] and du[r+1].name ~= "" then
-							return du[r+1].name
+						if du then
+							local entry = du[r + 1]
+							if entry and entry.name and entry.name ~= "" then
+								return entry.name
+							end
 						end
-						return "upv_"..r
+						local capturedReg = caps[r]
+						if capturedReg ~= nil and proto.debugLocals then
+							for _, dl in ipairs(proto.debugLocals) do
+								if dl.register == capturedReg and dl.name and dl.name ~= "" then
+									return dl.name
+								end
+							end
+						end
+						return "upv_" .. tostring(r)
 					end
 					-- Register name: prefer debug name, fall back to p/v scheme
 					local regNameCache = {}
@@ -795,16 +807,16 @@ local function main()
 						local body=fmtProto(p)
 						if p.name then
 							emit("\n"..body)
-	
 							writeActions(registerActions[p.id])
-							emit("end\n"..fmtReg(reg).." = "..p.name)
-	
+							if not options.CleanMode then
+								emit("end\n"..fmtReg(reg).." = "..p.name)
+							else
+								emit("end")
+							end
 						else
 							emit(fmtReg(reg).." = "..body)
-	
 							writeActions(registerActions[p.id])
 							emit("end")
-	
 						end
 					end
 					-- Instructions that are pure VM bookkeeping in clean mode
@@ -884,14 +896,19 @@ local function main()
 							end
 							emit(gk.." = "..R(ur[1]))
 	
-						elseif opn=="GETUPVAL" then emit(R(ur[1]).." = "..fmtUpv(caps[ed[1]]))
+						elseif opn=="GETUPVAL" then
+							local slot=ed[1]; local rc=caps[slot]
+							emit(R(ur[1]).." = "..fmtUpv(rc))
 	
-						elseif opn=="SETUPVAL" then emit(fmtUpv(caps[ed[1]]).." = "..R(ur[1]))
+						elseif opn=="SETUPVAL" then
+							local slot=ed[1]; local rc=caps[slot]
+							emit(fmtUpv(rc).." = "..R(ur[1]))
 	
 						elseif opn=="CLOSEUPVALS" then emit("-- clear captures from back until: "..ur[1])
 	
 						elseif opn=="GETIMPORT" then
 							local imp=tostring(consts[ed[1]+1] and consts[ed[1]+1].value or "")
+							imp=imp:gsub("%.%.+","."):gsub("^%.",""):gsub("%.$","")
 							local totalIdx = bit32.rshift(ed[2] or 0, 30)
 							if totalIdx==1 and options.ListUsedGlobals and isValidGlobal(imp) then
 								table.insert(usedGlobals,imp); usedGlobalsSet[imp]=true
@@ -926,8 +943,10 @@ local function main()
 								local p2=protoTable[c.value-1]; if p2 then writeProto(ur[1],p2) end
 							end
 						elseif opn=="NAMECALL" then
-							local method=tostring(consts[ed[2]+1] and consts[ed[2]+1].value or "")
-							emit("-- :"..method)
+							if not options.CleanMode then
+								local method=tostring(consts[ed[2]+1] and consts[ed[2]+1].value or "")
+								emit("-- :"..method)
+							end
 	
 						elseif opn=="CALL" then
 							local baseR=ur[1]
@@ -939,7 +958,8 @@ local function main()
 								nArgs-=1; argOff+=1
 							end
 							local callBody=""
-							if nRes==-1 then callBody="... = "
+							if nRes==-1 then
+								callBody=""  -- multret: result count unknown, no LHS
 							elseif nRes>0 then
 								local rb=""
 								for k=1,nRes do
@@ -1099,21 +1119,29 @@ local function main()
 							emit("end -- iterate + jump to #"..(i+ed[1]))
 	
 						elseif opn=="FORGPREP_INEXT" then
-							local tr=ur[1]+1
-							emit("for "..R(tr+2)..", "..R(tr+3).." in ipairs("..R(tr)..") do")
+							local base=ur[1]  -- A=iter A+1=state A+2=ctrl; vars at A+3,A+4
+							emit("for "..R(base+3)..", "..R(base+4).." in ipairs("..R(base)..") do")
 	
 						elseif opn=="FORGPREP_NEXT" then
-							local tr=ur[1]+1
-							emit("for "..R(tr+2)..", "..R(tr+3).." in pairs("..R(tr)..") do")
+							local base=ur[1]  -- A=iter A+1=state A+2=ctrl; vars at A+3,A+4
+							emit("for "..R(base+3)..", "..R(base+4).." in pairs("..R(base)..") do")
 	
 						elseif opn=="FORGPREP" then
 							local ei=i+ed[1]+2
 							local ea=actions[ei]
 							local vb=""
-							if ea then
+							if ea and ea.usedRegisters and #ea.usedRegisters > 0 then
 								for k,r in ipairs(ea.usedRegisters) do
-									vb..=fmtReg(r); if k~=#ea.usedRegisters then vb..=", " end
+									vb..=fmtReg(r, ei); if k~=#ea.usedRegisters then vb..=", " end
 								end
+							else
+								local baseReg=ur[1]; local nVars=2
+								if ea and ea.extraData and ea.extraData[2] then
+									nVars=math.max(1, bit32.band(ea.extraData[2], 0xFF))
+								end
+								local parts={}
+								for k=1,nVars do parts[k]=fmtReg(baseReg+2+(k-1), i) end
+								vb=table.concat(parts, ", ")
 							end
 							emit("for "..vb.." in "..R(ur[1]).." do -- end at #"..ei)
 	
@@ -1463,6 +1491,10 @@ local function main()
 			for _ in nextLine:gmatch(ep) do count += 1 end
 			if count ~= 1 then return false end
 			if nextLine:match("^%s*" .. ep .. "%s*=") then return false end
+			for k = i + 1, j - 1 do
+				local mid = rawLines[k]
+				if mid and mid:match("^%s*" .. ep .. "%s*=") then return false end
+			end
 			rawLines[j] = nextLine:gsub(ep, lit, 1)
 			rawLines[i] = nil
 			return true
@@ -1492,6 +1524,11 @@ local function main()
 			for _ in nextLine:gmatch(epReg) do count += 1 end
 			if count ~= 1 then return false end
 			if nextLine:match("^%s*" .. epReg .. "%s*=") then return false end
+			for k = i + 1, j - 1 do
+				local mid = rawLines[k]
+				if mid and mid:match("^%s*" .. epSrc .. "%s*=") then return false end
+			end
+			if src:match("^upv_") then return false end
 			rawLines[j] = nextLine:gsub(epReg, src .. field, 1)
 			rawLines[i] = nil
 			return true
