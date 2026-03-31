@@ -2120,8 +2120,10 @@ local function hlDetect(tokens, idx)
     return "Text"
 end
 local function hlLine(line)
-    local tokens = hlTokenize(line)
-    local out = ""
+    local indent, rest = line:match("^([\t ]*)(.*)")
+    local indentHtml = indent:gsub("\t", string.rep("&#32;", 4)):gsub(" ", "&#32;")
+    local tokens = hlTokenize(rest)
+    local out = indentHtml
     for i, tok in ipairs(tokens) do
         local col  = Syntax[hlDetect(tokens, i)] or Syntax.Text
         local safe = tok[1]:gsub("&","&amp;"):gsub("<","&lt;"):gsub(">","&gt;")
@@ -2156,6 +2158,7 @@ local rowFrames    = {}
 local scrollOffset = 0
 local filterText   = ""
 local ctxMenu      = nil
+local refreshProps -- forward declaration; defined later after UI is built
 local function hasChildren(inst)
     local ok, ch = pcall(inst.GetChildren, inst)
     return ok and #ch > 0
@@ -2315,26 +2318,29 @@ local function convertGuiToScript(gui)
             name=scriptObj.Name, source=source, enabled=enabled,
         })
     end
-    local function generateGuiCode(obj, parentVar)
+    local function generateGuiCode(obj, parentVar, indent)
+        indent = indent or "\t"
         local cls = obj.ClassName
         if cls == "LocalScript" or cls == "Script" or cls == "ModuleScript" then
             extractScript(obj, parentVar); return
         end
         local varName = newVar(obj.Name)
         instanceToVar[obj] = varName
-        emit(("local %s = Instance.new(%q)"):format(varName, cls))
-        emit(("%s.Parent = %s"):format(varName, parentVar))
+        emit(indent .. ("local %s = Instance.new(%q)"):format(varName, cls))
+        emit(indent .. ("%s.Parent = %s"):format(varName, parentVar))
         local props = getGuiProps(obj)
         for _, propName in ipairs(props) do
             if propName == "Name" and obj.Name == cls then continue end
             local ok, val = pcall(function() return obj[propName] end)
             if ok and val ~= nil and not guiShouldSkip(propName, val) then
                 local s = serializeVal(val)
-                if s ~= "nil" then emit(("%s.%s = %s"):format(varName, propName, s)) end
+                if s ~= "nil" then
+                    emit(indent .. ("%s.%s = %s"):format(varName, propName, s))
+                end
             end
         end
         for _, child in ipairs(obj:GetChildren()) do
-            generateGuiCode(child, varName)
+            generateGuiCode(child, varName, indent)
         end
     end
     emit('local Players = game:GetService("Players")')
@@ -2354,10 +2360,9 @@ local function convertGuiToScript(gui)
             if s ~= "nil" then emit(("\t%s.%s = %s"):format(sgVar, propName, s)) end
         end
     end
-    local savedLines = codeLines; codeLines = {}
-    for _, child in ipairs(gui:GetChildren()) do generateGuiCode(child, sgVar) end
-    local bodyLines = codeLines; codeLines = savedLines
-    for _, l in ipairs(bodyLines) do emit("\t"..l) end
+    for _, child in ipairs(gui:GetChildren()) do
+        generateGuiCode(child, sgVar, "\t")
+    end
     emit(("\t%s.Parent = playerGui"):format(sgVar))
     emit(("\treturn %s"):format(sgVar))
     emit("end")
@@ -2456,28 +2461,34 @@ local closeBtn = mk("TextButton",{
     BackgroundColor3=Color3.fromRGB(180,50,50), BackgroundTransparency=1,
     Text="X", TextColor3=Color3.fromRGB(255,255,255), BorderSizePixel=1
 }, topBar)
-local quickNav = mk("ScrollingFrame",{
-    Name="QuickNav", Size=UDim2.new(1,0,0,28), Position=UDim2.new(0,0,0,25),
-    BackgroundColor3=Color3.fromRGB(40,40,40), BorderSizePixel=0,
-    CanvasSize=UDim2.new(0,0,0,0), ScrollBarThickness=1,
-    AutomaticCanvasSize=Enum.AutomaticSize.X
-}, main)
-local qvLayout = mk("UIListLayout",{
-    FillDirection=Enum.FillDirection.Horizontal,
-    SortOrder=Enum.SortOrder.LayoutOrder, Padding=UDim.new(0,2)
-}, quickNav)
-local qvPad = mk("UIPadding",{PaddingLeft=UDim.new(0,5),PaddingTop=UDim.new(0,4)}, quickNav)
 local split = mk("Frame",{
-    Name="Split", Size=UDim2.new(1,0,1,-53), Position=UDim2.new(0,0,0,53),
+    Name="Split", Size=UDim2.new(1,0,1,-25), Position=UDim2.new(0,0,0,25),
     BackgroundTransparency=1
 }, main)
 local leftCol = mk("Frame",{
     Name="LeftCol", Size=UDim2.new(0.38,0,1,0), BackgroundTransparency=1
 }, split)
-local treeToolbar = mk("Frame",{
-    Size=UDim2.new(1,0,0,24), BackgroundColor3=Color3.fromRGB(40,40,40),
-    BorderSizePixel=0
+
+-- ── Tree section (top 55%) ──────────────────────────────────────────────────
+local treeSection = mk("Frame",{
+    Name="TreeSection", Size=UDim2.new(1,0,0.55,0),
+    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=0
 }, leftCol)
+local treeHeader = mk("Frame",{
+    Name="TreeHeader", Size=UDim2.new(1,0,0,22),
+    BackgroundColor3=Color3.fromRGB(42,42,42), BorderSizePixel=0
+}, treeSection)
+mk("TextLabel",{
+    Size=UDim2.new(1,-8,1,0), Position=UDim2.new(0,8,0,0),
+    BackgroundTransparency=1, Text="Explorer",
+    TextColor3=Color3.fromRGB(200,200,200),
+    TextXAlignment=Enum.TextXAlignment.Left,
+    Font=Enum.Font.SourceSansBold, TextSize=12
+}, treeHeader)
+local treeToolbar = mk("Frame",{
+    Size=UDim2.new(1,0,0,24), Position=UDim2.new(0,0,0,22),
+    BackgroundColor3=Color3.fromRGB(40,40,40), BorderSizePixel=0
+}, treeSection)
 local searchFrame = mk("Frame",{
     Size=UDim2.new(1,-10,0,18), Position=UDim2.new(0,5,0,3),
     BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=0
@@ -2486,12 +2497,60 @@ local searchInput = mk("TextBox",{
     Name="Input", Size=UDim2.new(1,-10,1,0), Position=UDim2.new(0,5,0,0),
     BackgroundTransparency=1, TextColor3=Color3.fromRGB(255,255,255),
     TextXAlignment=Enum.TextXAlignment.Left,
-    PlaceholderText="Search...", Text="", TextSize=11
+    PlaceholderText="Search workspace...", Text="", TextSize=11
 }, searchFrame)
 local listFrame = mk("Frame",{
-    Name="List", Size=UDim2.new(1,0,1,-24), Position=UDim2.new(0,0,0,24),
+    Name="List", Size=UDim2.new(1,0,1,-46), Position=UDim2.new(0,0,0,46),
     BackgroundTransparency=1, ClipsDescendants=true
+}, treeSection)
+
+-- ── Divider between tree and properties ─────────────────────────────────────
+mk("Frame",{
+    Size=UDim2.new(1,0,0,1), Position=UDim2.new(0,0,0.55,0),
+    BackgroundColor3=Color3.fromRGB(55,55,55), BorderSizePixel=0
 }, leftCol)
+
+-- ── Properties section (bottom 45%) ─────────────────────────────────────────
+local propsSection = mk("Frame",{
+    Name="PropsSection", Size=UDim2.new(1,0,0.45,-1), Position=UDim2.new(0,0,0.55,1),
+    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=0
+}, leftCol)
+local propsHeader = mk("Frame",{
+    Name="PropsHeader", Size=UDim2.new(1,0,0,22),
+    BackgroundColor3=Color3.fromRGB(42,42,42), BorderSizePixel=0
+}, propsSection)
+mk("TextLabel",{
+    Size=UDim2.new(1,-8,1,0), Position=UDim2.new(0,8,0,0),
+    BackgroundTransparency=1, Text="Properties",
+    TextColor3=Color3.fromRGB(200,200,200),
+    TextXAlignment=Enum.TextXAlignment.Left,
+    Font=Enum.Font.SourceSansBold, TextSize=12
+}, propsHeader)
+local propsToolbar = mk("Frame",{
+    Size=UDim2.new(1,0,0,24), Position=UDim2.new(0,0,0,22),
+    BackgroundColor3=Color3.fromRGB(40,40,40), BorderSizePixel=0
+}, propsSection)
+local propsSearchFrame = mk("Frame",{
+    Size=UDim2.new(1,-10,0,18), Position=UDim2.new(0,5,0,3),
+    BackgroundColor3=Color3.fromRGB(30,30,30), BorderSizePixel=0
+}, propsToolbar)
+local propsSearchInput = mk("TextBox",{
+    Name="PropsSearch", Size=UDim2.new(1,-10,1,0), Position=UDim2.new(0,5,0,0),
+    BackgroundTransparency=1, TextColor3=Color3.fromRGB(255,255,255),
+    TextXAlignment=Enum.TextXAlignment.Left,
+    PlaceholderText="Search properties...", Text="", TextSize=11
+}, propsSearchFrame)
+local propsScroll = mk("ScrollingFrame",{
+    Name="PropsScroll",
+    Size=UDim2.new(1,0,1,-46), Position=UDim2.new(0,0,0,46),
+    BackgroundTransparency=1, BorderSizePixel=0,
+    ScrollBarThickness=3, ScrollBarImageColor3=Color3.fromRGB(70,70,70),
+    CanvasSize=UDim2.new(0,0,0,0), AutomaticCanvasSize=Enum.AutomaticSize.Y,
+    ClipsDescendants=true
+}, propsSection)
+mk("UIListLayout",{
+    SortOrder=Enum.SortOrder.LayoutOrder, Padding=UDim.new(0,0)
+}, propsScroll)
 mk("Frame",{
     Size=UDim2.new(0,1,1,0), Position=UDim2.new(0.38,0,0,0),
     BackgroundColor3=Color3.fromRGB(55,55,55), BorderSizePixel=0
@@ -2534,6 +2593,13 @@ local execBtn = mk("TextButton",{
     Text="Execute", TextColor3=Color3.fromRGB(160,255,160),
     Font=Enum.Font.SourceSansBold, TextSize=10
 }, decompHeader)
+local convertBtn = mk("TextButton",{
+    Name="ConvertBtn",
+    Size=UDim2.new(0,75,0,20), Position=UDim2.new(1,-295,0,3),
+    BackgroundColor3=Color3.fromRGB(50,40,70), BorderSizePixel=0,
+    Text="Conv GUI", TextColor3=Color3.fromRGB(200,160,255),
+    Font=Enum.Font.SourceSansBold, TextSize=10
+}, decompHeader)
 local codeScroll = mk("ScrollingFrame",{
     Name="CodeScroll",
     Size=UDim2.new(1,0,1,-26), Position=UDim2.new(0,0,0,26),
@@ -2548,9 +2614,14 @@ mk("UIPadding",{
     PaddingLeft=UDim.new(0,8), PaddingTop=UDim.new(0,5),
     PaddingRight=UDim.new(0,8), PaddingBottom=UDim.new(0,5)
 }, codeScroll)
+local codeListLayout = mk("UIListLayout",{
+    SortOrder=Enum.SortOrder.LayoutOrder,
+    Padding=UDim.new(0,0),
+    FillDirection=Enum.FillDirection.Vertical,
+}, codeScroll)
 local codeLabel = mk("TextLabel",{
     Name="Code",
-    Size=UDim2.new(1,-16,0,0),
+    Size=UDim2.new(1,0,0,0),
     AutomaticSize=Enum.AutomaticSize.Y,
     BackgroundTransparency=1,
     TextColor3=Color3.fromRGB(204,204,204),
@@ -2558,6 +2629,7 @@ local codeLabel = mk("TextLabel",{
     TextYAlignment=Enum.TextYAlignment.Top,
     Font=Enum.Font.Code, TextSize=12,
     RichText=true, TextWrapped=false,
+    LayoutOrder=0,
     Text='<font color="#555555">-- zukv2 decompiler\n-- by @OverZuka</font>'
 }, codeScroll)
 local resizeHandle = mk("Frame",{
@@ -2573,41 +2645,30 @@ mk("TextLabel",{
 sg.Parent = playerGui
 local lastDecompResult = ""
 local extraCodeLabels  = {}
-local CODE_CHUNK       = 180000
 local function setCodeText(raw)
+    -- destroy all existing line labels
+    codeLabel.Text = ""
     for _, lbl in ipairs(extraCodeLabels) do lbl:Destroy() end
     table.clear(extraCodeLabels)
-    local lines = {}
+    local order = 1
     for line in (raw.."\n"):gmatch("[^\n]*\n") do
-        table.insert(lines, hlLine(line:gsub("\n$","")))
-    end
-    local chunks, cur, curLen = {}, {}, 0
-    for _, hl in ipairs(lines) do
-        local addLen = #hl + 1
-        if curLen + addLen > CODE_CHUNK and #cur > 0 then
-            table.insert(chunks, table.concat(cur, "\n"))
-            cur = {}; curLen = 0
-        end
-        table.insert(cur, hl); curLen += addLen
-    end
-    if #cur > 0 then table.insert(chunks, table.concat(cur, "\n")) end
-    if #chunks == 0 then chunks = {""} end
-    codeLabel.Text = chunks[1]
-    for i = 2, #chunks do
+        local bare = line:gsub("\n$","")
         local lbl = Instance.new("TextLabel")
-        lbl.Size           = UDim2.new(1,-16,0,0)
-        lbl.AutomaticSize  = Enum.AutomaticSize.Y
+        lbl.Size                = UDim2.new(1,0,0,14)
+        lbl.AutomaticSize       = Enum.AutomaticSize.Y
         lbl.BackgroundTransparency = 1
-        lbl.TextColor3     = Color3.fromRGB(204,204,204)
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.TextYAlignment = Enum.TextYAlignment.Top
-        lbl.Font           = Enum.Font.Code
-        lbl.TextSize       = 10
-        lbl.RichText       = true
-        lbl.TextWrapped    = false
-        lbl.Text           = chunks[i]
-        lbl.Parent         = codeScroll
+        lbl.TextColor3          = Color3.fromRGB(204,204,204)
+        lbl.TextXAlignment      = Enum.TextXAlignment.Left
+        lbl.TextYAlignment      = Enum.TextYAlignment.Top
+        lbl.Font                = Enum.Font.Code
+        lbl.TextSize            = 12
+        lbl.RichText            = true
+        lbl.TextWrapped         = false
+        lbl.LayoutOrder         = order
+        lbl.Text                = hlLine(bare)
+        lbl.Parent              = codeScroll
         table.insert(extraCodeLabels, lbl)
+        order += 1
     end
 end
 local function openCtxMenu(inst, screenPos)
@@ -2716,10 +2777,12 @@ local function renderRows()
                 decompTitle.Text = inst.ClassName .. " › " .. inst.Name
             end
             renderRows()
+            refreshProps()
         end)
-        entry.MouseButton2Click:Connect(function(x, y)
+        entry.MouseButton2Click:Connect(function()
             selected = inst; renderRows()
-            openCtxMenu(inst, Vector2.new(x, y))
+            refreshProps()
+            openCtxMenu(inst, UserInputService:GetMouseLocation())
         end)
         if hasChildren(inst) then
             local exp = mk("TextButton",{
@@ -2796,18 +2859,269 @@ execBtn.MouseButton1Click:Connect(function()
         end
     end
 end)
-for i, svcName in ipairs(QUICK_NAV_SERVICES) do
-    local ok, svc = pcall(game.GetService, game, svcName)
-    if ok then
-        local btn = mk("TextButton",{
-            Size=UDim2.new(0,0,0,20), AutomaticSize=Enum.AutomaticSize.X,
-            BackgroundColor3=Color3.fromRGB(50,50,50), BorderSizePixel=0,
-            Text="  "..svcName.."  ", TextColor3=Color3.fromRGB(200,200,200),
-            Font=Enum.Font.SourceSans, TextSize=12, LayoutOrder=i
-        }, quickNav)
-        mk("UIStroke",{Color=Color3.fromRGB(70,70,70)}, btn)
-        btn.MouseButton1Click:Connect(function() jumpToInstance(svc) end)
+convertBtn.MouseButton1Click:Connect(function()
+    if not selected then
+        codeLabel.Text = '<font color="#ff6060">-- No instance selected.</font>'
+        return
     end
+    if selected.ClassName ~= "ScreenGui" then
+        codeLabel.Text = '<font color="#ff9030">-- "'..tostring(selected.Name)..'" is not a ScreenGui.\n-- Select a ScreenGui to use Convert GUI.</font>'
+        return
+    end
+    convertBtn.Text = "Working…"
+    convertBtn.BackgroundColor3 = Color3.fromRGB(60,40,80)
+    codeLabel.Text = '<font color="#555555">-- Converting '..selected.Name..'…</font>'
+    task.defer(function()
+        local output = convertGuiToScript(selected)
+        lastDecompResult = output
+        setCodeText(output)
+        decompTitle.Text = "ScreenGui › " .. selected.Name .. "  [Converted]"
+        convertBtn.Text = "Conv GUI"
+        convertBtn.BackgroundColor3 = Color3.fromRGB(50,40,70)
+    end)
+end)
+-- ── Properties panel ────────────────────────────────────────────────────────
+local propRowFrames = {}
+local propsFilterText = ""
+local PROPS_ROW_H = 18
+local SKIP_PROP_TYPES = { RBXScriptSignal=true, Instance=true }
+
+local function serializeValShort(v)
+    local t = typeof(v)
+    if t == "string"     then return #v > 40 and ('"'..v:sub(1,37)..'..."') or string.format("%q",v)
+    elseif t == "number" then return tostring(v)
+    elseif t == "boolean"then return tostring(v)
+    elseif t == "nil"    then return "nil"
+    elseif t == "Vector3"then return ("%.3g, %.3g, %.3g"):format(v.X,v.Y,v.Z)
+    elseif t == "Vector2"then return ("%.3g, %.3g"):format(v.X,v.Y)
+    elseif t == "UDim2"  then return ("{%.3g,%.3g},{%.3g,%.3g}"):format(v.X.Scale,v.X.Offset,v.Y.Scale,v.Y.Offset)
+    elseif t == "UDim"   then return ("%.3g, %.3g"):format(v.Scale,v.Offset)
+    elseif t == "Color3" then return ("%d, %d, %d"):format(math.floor(v.R*255),math.floor(v.G*255),math.floor(v.B*255))
+    elseif t == "EnumItem" then return tostring(v):match("%.(.+)$") or tostring(v)
+    elseif t == "CFrame" then return "CFrame"
+    elseif t == "BrickColor" then return v.Name
+    elseif t == "Rect"   then return ("%.3g,%.3g,%.3g,%.3g"):format(v.Min.X,v.Min.Y,v.Max.X,v.Max.Y)
+    elseif t == "NumberRange" then return ("%.3g .. %.3g"):format(v.Min,v.Max)
+    elseif t == "FontFace" then return v.Family:match("[^/]+$") or "Font"
+    else return t end
+end
+
+local function getTypeColor(v)
+    local t = typeof(v)
+    if t == "string"   then return Color3.fromRGB(173,241,149)
+    elseif t == "number" then return Color3.fromRGB(255,198,0)
+    elseif t == "boolean" then return Color3.fromRGB(255,198,0)
+    elseif t == "Color3" then return v  -- swatch
+    elseif t == "EnumItem" then return Color3.fromRGB(132,214,247)
+    else return Color3.fromRGB(180,180,180) end
+end
+
+refreshProps = function()
+    for _, f in ipairs(propRowFrames) do f:Destroy() end
+    table.clear(propRowFrames)
+    if not selected then return end
+    local inst = selected
+
+    -- Build property list: executor API first, then hardcoded class map
+    local allPropNames = {}
+    local seen = {}
+    local function addProp(name)
+        if not seen[name] then seen[name] = true; table.insert(allPropNames, name) end
+    end
+
+    -- 1) getproperties (Synapse X / most modern executors)
+    if type(getgenv().getproperties) == "function" then
+        local ok2, result = pcall(getgenv().getproperties, inst)
+        if ok2 and type(result) == "table" then
+            for _, p in ipairs(result) do
+                if type(p) == "table" and p.Name then addProp(p.Name)
+                elseif type(p) == "string" then addProp(p) end
+            end
+        end
+    end
+
+    -- 2) gethiddenproperty enumeration isn't a list API, skip
+
+    -- 3) Hardcoded class-aware map — covers the vast majority of cases
+    if #allPropNames == 0 then
+        local cls = inst.ClassName
+        -- Universal base props every Instance has
+        local base = {"Name","ClassName","Parent","Archivable"}
+        for _, p in ipairs(base) do addProp(p) end
+
+        local classProps = {
+            -- GuiBase2d
+            GuiBase2d = {"AbsolutePosition","AbsoluteSize","AbsoluteRotation","AutoLocalize"},
+            -- GuiObject (all visible GUI elements inherit this)
+            GuiObject = {"Active","AnchorPoint","AutomaticSize","BackgroundColor3",
+                "BackgroundTransparency","BorderColor3","BorderSizePixel","ClipsDescendants",
+                "LayoutOrder","Position","Rotation","Selectable","Size","SizeConstraint",
+                "Visible","ZIndex"},
+            -- Text-based
+            TextLabel = {"Font","FontFace","LineHeight","MaxVisibleGraphemes","RichText","Text",
+                "TextBounds","TextColor3","TextFits","TextScaled","TextSize","TextStrokeColor3",
+                "TextStrokeTransparency","TextTransparency","TextTruncate","TextWrapped",
+                "TextXAlignment","TextYAlignment","AutomaticSize"},
+            TextButton = {"Font","FontFace","LineHeight","RichText","Text","TextBounds",
+                "TextColor3","TextFits","TextScaled","TextSize","TextStrokeColor3",
+                "TextStrokeTransparency","TextTransparency","TextTruncate","TextWrapped",
+                "TextXAlignment","TextYAlignment","AutoButtonColor","Modal","Style"},
+            TextBox = {"Font","FontFace","LineHeight","RichText","Text","TextBounds",
+                "TextColor3","TextFits","TextScaled","TextSize","TextStrokeColor3",
+                "TextStrokeTransparency","TextTransparency","TextTruncate","TextWrapped",
+                "TextXAlignment","TextYAlignment","ClearTextOnFocus","MultiLine",
+                "PlaceholderColor3","PlaceholderText","TextEditable"},
+            -- Frames
+            Frame = {"Style"},
+            ScrollingFrame = {"CanvasPosition","CanvasSize","ScrollBarImageColor3",
+                "ScrollBarImageTransparency","ScrollBarThickness","ScrollingDirection",
+                "ScrollingEnabled","VerticalScrollBarInset","HorizontalScrollBarInset",
+                "BottomImage","MidImage","TopImage"},
+            -- Images
+            ImageLabel = {"Image","ImageColor3","ImageRectOffset","ImageRectSize",
+                "ImageTransparency","ResampleMode","ScaleType","SliceCenter","SliceScale","TileSize"},
+            ImageButton = {"Image","ImageColor3","ImageRectOffset","ImageRectSize",
+                "ImageTransparency","ResampleMode","ScaleType","SliceCenter","SliceScale","TileSize",
+                "HoverImage","PressedImage","AutoButtonColor","Modal","Style"},
+            -- ScreenGui
+            ScreenGui = {"DisplayOrder","Enabled","IgnoreGuiInset","ResetOnSpawn",
+                "ScreenInsets","ZIndexBehavior"},
+            -- UI layout/decoration
+            UICorner = {"CornerRadius"},
+            UIStroke = {"ApplyStrokeMode","Color","Enabled","LineJoinMode","Thickness","Transparency"},
+            UIGradient = {"Color","Enabled","Offset","Rotation","Transparency"},
+            UIPadding = {"PaddingBottom","PaddingLeft","PaddingRight","PaddingTop"},
+            UIListLayout = {"FillDirection","HorizontalAlignment","HorizontalFlex",
+                "ItemLineAlignment","Padding","SortOrder","VerticalAlignment","VerticalFlex","Wraps"},
+            UIGridLayout = {"CellPadding","CellSize","FillDirection","FillDirectionMaxCells",
+                "HorizontalAlignment","SortOrder","StartCorner","VerticalAlignment"},
+            UIScale = {"Scale"},
+            UIAspectRatioConstraint = {"AspectRatio","AspectType","DominantAxis"},
+            UISizeConstraint = {"MaxSize","MinSize"},
+            UITextSizeConstraint = {"MaxTextSize","MinTextSize"},
+            -- Parts
+            BasePart = {"Anchored","CanCollide","CastShadow","CFrame","Color","Locked",
+                "Material","Reflectance","Size","Transparency","BrickColor","Massless",
+                "CollisionGroupId","RootPriority"},
+            Part = {"Shape"},
+            MeshPart = {"MeshId","TextureID"},
+            -- Humanoid
+            Humanoid = {"DisplayName","Health","HipHeight","JumpHeight","JumpPower",
+                "MaxHealth","MaxSlopeAngle","RootPart","WalkSpeed","AutoRotate",
+                "BreakJointsOnDeath","DisplayDistanceType","HealthDisplayDistance",
+                "NameDisplayDistance","NameOcclusion","RequiresNeck","RigType"},
+            -- Scripts
+            Script = {"Disabled","LinkedSource","RunContext","Source"},
+            LocalScript = {"Disabled","LinkedSource","Source"},
+            ModuleScript = {"LinkedSource","Source"},
+            -- Values
+            StringValue = {"Value"},
+            IntValue = {"Value"},
+            NumberValue = {"Value"},
+            BoolValue = {"Value"},
+            Vector3Value = {"Value"},
+            Color3Value = {"Value"},
+            ObjectValue = {"Value"},
+            -- Sound
+            Sound = {"Looped","MaxDistance","Pitch","PlayOnRemove","Playing",
+                "RollOffMaxDistance","RollOffMinDistance","RollOffMode","SoundId",
+                "TimeLength","TimePosition","Volume"},
+            -- Lighting
+            Lighting = {"Ambient","Brightness","ClockTime","ColorShift_Bottom",
+                "ColorShift_Top","EnvironmentDiffuseScale","EnvironmentSpecularScale",
+                "ExposureCompensation","FogColor","FogEnd","FogStart",
+                "GeographicLatitude","GlobalShadows","OutdoorAmbient","ShadowSoftness","TimeOfDay"},
+            -- Camera
+            Camera = {"CFrame","CameraSubject","CameraType","FieldOfView",
+                "Focus","HeadLocked","HeadScale","MaxAxisFieldOfView","NearPlaneZ","ViewportSize"},
+        }
+
+        -- inheritance chain lookup
+        local chain = {
+            TextLabel  = {"GuiBase2d","GuiObject","TextLabel"},
+            TextButton = {"GuiBase2d","GuiObject","TextButton"},
+            TextBox    = {"GuiBase2d","GuiObject","TextBox"},
+            Frame      = {"GuiBase2d","GuiObject","Frame"},
+            ScrollingFrame = {"GuiBase2d","GuiObject","ScrollingFrame"},
+            ImageLabel = {"GuiBase2d","GuiObject","ImageLabel"},
+            ImageButton= {"GuiBase2d","GuiObject","ImageButton"},
+            ScreenGui  = {"ScreenGui"},
+            UICorner   = {"UICorner"},UIStroke={"UIStroke"},UIGradient={"UIGradient"},
+            UIPadding  = {"UIPadding"},UIListLayout={"UIListLayout"},
+            UIGridLayout={"UIGridLayout"},UIScale={"UIScale"},
+            UIAspectRatioConstraint={"UIAspectRatioConstraint"},
+            UISizeConstraint={"UISizeConstraint"},UITextSizeConstraint={"UITextSizeConstraint"},
+            Part={"BasePart","Part"},MeshPart={"BasePart","MeshPart"},
+            UnionOperation={"BasePart"},SpecialMesh={"BasePart"},
+            Humanoid={"Humanoid"},
+            Script={"Script"},LocalScript={"LocalScript"},ModuleScript={"ModuleScript"},
+            StringValue={"StringValue"},IntValue={"IntValue"},NumberValue={"NumberValue"},
+            BoolValue={"BoolValue"},Vector3Value={"Vector3Value"},
+            Color3Value={"Color3Value"},ObjectValue={"ObjectValue"},
+            Sound={"Sound"},Lighting={"Lighting"},Camera={"Camera"},
+        }
+        local hierarchy = chain[cls] or {"GuiBase2d","GuiObject"}
+        for _, c in ipairs(hierarchy) do
+            if classProps[c] then
+                for _, p in ipairs(classProps[c]) do addProp(p) end
+            end
+        end
+    end
+    local filter = propsFilterText:lower()
+    local order = 0
+    for _, propName in ipairs(allPropNames) do
+        if filter ~= "" and not propName:lower():find(filter, 1, true) then continue end
+        local okV, val = pcall(function() return inst[propName] end)
+        if not okV then continue end
+        if typeof(val) == "RBXScriptSignal" then continue end
+        if typeof(val) == "Instance" then continue end
+        order += 1
+        local isEven = order % 2 == 0
+        local row = mk("Frame",{
+            Size=UDim2.new(1,0,0,PROPS_ROW_H),
+            BackgroundColor3=isEven and Color3.fromRGB(28,28,28) or Color3.fromRGB(33,33,33),
+            BackgroundTransparency=0, BorderSizePixel=0,
+            LayoutOrder=order
+        }, propsScroll)
+        -- color swatch for Color3 values
+        if typeof(val) == "Color3" then
+            mk("Frame",{
+                Size=UDim2.new(0,12,0,12), Position=UDim2.new(0,2,0.5,-6),
+                BackgroundColor3=val, BorderSizePixel=1
+            }, row)
+        end
+        mk("TextLabel",{
+            Size=UDim2.new(0.52,0,1,0), Position=UDim2.new(0,2,0,0),
+            BackgroundTransparency=1,
+            Text=propName,
+            TextColor3=Color3.fromRGB(190,190,190),
+            TextXAlignment=Enum.TextXAlignment.Left,
+            Font=Enum.Font.SourceSans, TextSize=11,
+            TextTruncate=Enum.TextTruncate.AtEnd,
+            ClipsDescendants=true
+        }, row)
+        local valColor = typeof(val)=="Color3" and Color3.fromRGB(180,180,180) or getTypeColor(val)
+        mk("TextLabel",{
+            Size=UDim2.new(0.48,-4,1,0), Position=UDim2.new(0.52,0,0,0),
+            BackgroundTransparency=1,
+            Text=serializeValShort(val),
+            TextColor3=valColor,
+            TextXAlignment=Enum.TextXAlignment.Left,
+            Font=Enum.Font.SourceSans, TextSize=11,
+            TextTruncate=Enum.TextTruncate.AtEnd,
+            ClipsDescendants=true
+        }, row)
+        table.insert(propRowFrames, row)
+    end
+end
+
+propsSearchInput:GetPropertyChangedSignal("Text"):Connect(function()
+    propsFilterText = propsSearchInput.Text
+    refreshProps()
+end)
+
+for i, svcName in ipairs(QUICK_NAV_SERVICES) do
+    -- quickNav removed; services accessible via tree directly
 end
 closeBtn.MouseButton1Click:Connect(function() sg:Destroy() end)
 local dragging, dragStart, startPos
